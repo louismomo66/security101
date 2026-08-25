@@ -82,8 +82,33 @@ PROMPT = (
 )
 
 
+# Publishers rename UCF's folders. Map the variants we have actually seen
+# rather than letting them fall through to the Normal default.
+CATEGORY_ALIASES = {
+    "normalvideos": "Normal", "normal_videos": "Normal",
+    "normal_videos_event": "Normal", "roadaccident": "RoadAccidents",
+    "road_accidents": "RoadAccidents", "fight": "Fighting",
+}
+
+_warned: set[str] = set()
+
+
 def build_target(category: str) -> str:
-    desc, incident = CATEGORY_TARGETS.get(category, CATEGORY_TARGETS["Normal"])
+    key = category
+    if key not in CATEGORY_TARGETS:
+        key = CATEGORY_ALIASES.get(category.lower().replace(" ", "_"), None)
+    if key is None:
+        # Falling back to Normal here would label an unrecognised crime class
+        # "INCIDENT: NONE" — training the model that the thing you want found
+        # is nothing to report. Wrong data is worse than missing data, so this
+        # is loud.
+        if category not in _warned:
+            _warned.add(category)
+            print(f"  !! unrecognised category {category!r} — treating as Normal. "
+                  f"If that is a crime class, add it to CATEGORY_TARGETS or "
+                  f"CATEGORY_ALIASES before trusting this run.", flush=True)
+        key = "Normal"
+    desc, incident = CATEGORY_TARGETS[key]
     return f"{desc}\nINCIDENT: {incident}"
 
 
