@@ -126,7 +126,16 @@ def main() -> int:
                         "exist on the Hub. hibana2077/UCF-Crime-Dataset is a single 11.8 GB "
                         "zip that load_dataset cannot read, and its images are 64x64.")
     p.add_argument("--per-category-cap", type=int, default=1000,
-                   help="max images per category, matching the blog's 26k/14-category balance")
+                   help="max images per CRIME category")
+    p.add_argument("--normal-cap", type=int, default=None,
+                   help="max images for the Normal class specifically. Defaults to "
+                        "--per-category-cap, i.e. the balanced recipe. Measured "
+                        "2026-08-25: a balanced mix (431 Normal of 5,950 = 7%%) "
+                        "produced 88.1%% exact match on a balanced sample and a "
+                        "34.8%% FALSE ALARM RATE on ordinary frames — worse than "
+                        "the public weapon detector this project rejected. Set "
+                        "this to several times --per-category-cap so the training "
+                        "mix resembles deployment, where ~99%% of frames are normal.")
     p.add_argument("--holdout-frac", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
@@ -223,10 +232,15 @@ def _write_split(by_category, out_dir: Path, args, loader) -> int:
     random.seed(args.seed)
     records = []
     img_idx = 0
+    normal_cap = args.normal_cap if args.normal_cap is not None else args.per_category_cap
     for cat, items in by_category.items():
         items = list(items)
         random.shuffle(items)
-        items = items[: args.per_category_cap]
+        # The Normal class gets its own cap. Training on a balanced mix teaches
+        # the model that something is usually wrong, which is true of the
+        # training set and false of every camera it will ever see.
+        is_normal = build_target(cat).endswith("INCIDENT: NONE")
+        items = items[: (normal_cap if is_normal else args.per_category_cap)]
         target = build_target(cat if cat in CATEGORY_TARGETS else "Normal")
         for it in items:
             try:
@@ -252,6 +266,14 @@ def _write_split(by_category, out_dir: Path, args, loader) -> int:
             for r in split:
                 f.write(json.dumps(r) + "\n")
 
+    n_normal = sum(1 for r in records if r["response"].endswith("INCIDENT: NONE"))
+    pct = 100.0 * n_normal / len(records)
+    print(f"\nnormal frames: {n_normal}/{len(records)} = {pct:.1f}% of the mix")
+    if pct < 30:
+        print("  !! A camera sees ~99% normal frames. Training at "
+              f"{pct:.0f}% teaches the model that something is usually wrong. "
+              "Measured effect at 7%: 34.8% false alarms on ordinary footage. "
+              "Raise --normal-cap.")
     print(f"\nwrote {len(train)} train / {len(holdout)} holdout examples to {out_dir}")
     print("sample record:", json.dumps(records[0], indent=2))
     return 0
