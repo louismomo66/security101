@@ -60,18 +60,38 @@ def flagged(text: str) -> bool | None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--model", required=True)
-    p.add_argument("--mmproj", default=None)
+    p.add_argument("--model", required=True,
+                   help="a .gguf file (--backend gguf) or a LoRA adapter "
+                        "directory (--backend peft)")
+    p.add_argument("--mmproj", default=None, help="gguf backend only")
+    p.add_argument("--backend", choices=("auto", "gguf", "peft"), default="auto",
+                   help="'auto' picks peft for a directory, gguf for a file. "
+                        "peft loads the adapter straight onto the base model, "
+                        "which avoids merging and converting 4.7 GB of "
+                        "intermediates to test 40 MB of trained weights.")
+    p.add_argument("--base", default=None,
+                   help="peft backend: base model id the adapter was trained "
+                        "on (default LiquidAI/LFM2.5-VL-1.6B)")
     p.add_argument("--annotations", default="training/data/annotations.csv")
     p.add_argument("--every", type=float, default=2.0, help="seconds between sampled frames")
     p.add_argument("--max-frames-per-span", type=int, default=15)
     args = p.parse_args()
 
     import os
-    os.environ["SENTINEL_LFM_MODEL"] = args.model
-    if args.mmproj:
-        os.environ["SENTINEL_LFM_MMPROJ"] = args.mmproj
-    from backend.lfm_vlm import run_vlm_lfm
+    backend = args.backend
+    if backend == "auto":
+        backend = "peft" if Path(args.model).is_dir() else "gguf"
+
+    if backend == "peft":
+        os.environ["SENTINEL_LFM_ADAPTER"] = args.model
+        if args.base:
+            os.environ["SENTINEL_LFM_BASE"] = args.base
+        from backend.lfm_peft import run_vlm_lfm_peft as run_vlm_lfm
+    else:
+        os.environ["SENTINEL_LFM_MODEL"] = args.model
+        if args.mmproj:
+            os.environ["SENTINEL_LFM_MMPROJ"] = args.mmproj
+        from backend.lfm_vlm import run_vlm_lfm
     from backend.threat import ThreatEngine
 
     prompt = ThreatEngine().threat_prompt()
