@@ -40,6 +40,8 @@ import random
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -87,20 +89,63 @@ def build_target(category: str) -> str:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--out", required=True, help="output directory for prepared JSONL + images")
-    p.add_argument("--hf-dataset", default="tanzzpatil/ucf-crime-small")
+    p.add_argument("--src", default=None,
+                   help="local directory of class-named subfolders of images, e.g. "
+                        "/kaggle/input/ucf-crime-dataset/Train. Preferred over --hf-dataset: "
+                        "Kaggle attaches datasets with no download, and it works with any "
+                        "UCF-Crime copy regardless of who published it.")
+    p.add_argument("--hf-dataset", default=None,
+                   help="Hugging Face dataset id, as a fallback when --src is not given. "
+                        "NOTE: the previous default, tanzzpatil/ucf-crime-small, does not "
+                        "exist on the Hub. hibana2077/UCF-Crime-Dataset is a single 11.8 GB "
+                        "zip that load_dataset cannot read, and its images are 64x64.")
     p.add_argument("--per-category-cap", type=int, default=1000,
                    help="max images per category, matching the blog's 26k/14-category balance")
     p.add_argument("--holdout-frac", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
+    if not args.src and not args.hf_dataset:
+        raise SystemExit(
+            "give --src (a local directory of class-named subfolders) or --hf-dataset.\n"
+            "On Kaggle, attach a UCF-Crime dataset and point --src at it, e.g.\n"
+            "  --src /kaggle/input/ucf-crime-dataset/Train\n"
+            "That needs no download and no Hugging Face access."
+        )
+
+    out_dir = Path(args.out)
+    (out_dir / "images").mkdir(parents=True, exist_ok=True)
+
+    # ── Local directory mode ──────────────────────────────────────────────
+    # UCF-Crime copies are almost always laid out as one folder per class:
+    #     Train/Abuse/*.png, Train/Robbery/*.png, ...
+    # Reading that directly avoids depending on any particular publisher's
+    # HF column names, and on Kaggle it costs nothing because the dataset is
+    # already mounted read-only under /kaggle/input.
+    if args.src:
+        src = Path(args.src)
+        if not src.is_dir():
+            raise SystemExit(f"--src is not a directory: {src}")
+        exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+        by_category: dict[str, list[Path]] = {}
+        for child in sorted(src.iterdir()):
+            if not child.is_dir():
+                continue
+            files = [f for f in child.rglob("*") if f.suffix.lower() in exts]
+            if files:
+                by_category[child.name] = files
+        if not by_category:
+            raise SystemExit(
+                f"no class subfolders with images under {src}.\n"
+                f"contents: {[p.name for p in list(src.iterdir())[:10]]}"
+            )
+        print("category counts (raw):", {k: len(v) for k, v in by_category.items()})
+        return _write_split(by_category, out_dir, args, loader=Image.open)
+
     try:
         from datasets import load_dataset
     except ImportError:
         raise SystemExit("pip install datasets huggingface_hub first")
-
-    out_dir = Path(args.out)
-    (out_dir / "images").mkdir(parents=True, exist_ok=True)
 
     print(f"loading {args.hf_dataset} ...")
     ds = load_dataset(args.hf_dataset, split="train")
@@ -124,20 +169,39 @@ def main() -> int:
 
     print("category counts (raw):", {k: len(v) for k, v in by_category.items()})
 
+    return _write_split(by_category, out_dir, args,
+                        loader=lambda i: ds[i][image_col])
+
+
+def _write_split(by_category, out_dir: Path, args, loader) -> int:
+    """Sample per category, write images and the train/holdout JSONL.
+
+    `by_category` maps a category name to a list of items, and `loader` turns
+    one item into a PIL image — an index into an HF dataset, or a path on disk.
+    The two source modes differ only in that.
+    """
     random.seed(args.seed)
     records = []
     img_idx = 0
-    for cat, idxs in by_category.items():
-        random.shuffle(idxs)
-        idxs = idxs[: args.per_category_cap]
+    for cat, items in by_category.items():
+        items = list(items)
+        random.shuffle(items)
+        items = items[: args.per_category_cap]
         target = build_target(cat if cat in CATEGORY_TARGETS else "Normal")
-        for i in idxs:
-            img = ds[i][image_col]
+        for it in items:
+            try:
+                img = loader(it)
+            except Exception as exc:            # a few UCF frames are truncated
+                print(f"  skipped {it}: {exc}")
+                continue
             img_path = out_dir / "images" / f"{img_idx:07d}.jpg"
             img.convert("RGB").save(img_path, quality=90)
             records.append({"image": str(img_path.relative_to(out_dir)),
                             "category": cat, "prompt": PROMPT, "response": target})
             img_idx += 1
+
+    if not records:
+        raise SystemExit("no images were written — check --src / --hf-dataset")
 
     random.shuffle(records)
     n_holdout = int(len(records) * args.holdout_frac)
@@ -150,6 +214,7 @@ def main() -> int:
 
     print(f"\nwrote {len(train)} train / {len(holdout)} holdout examples to {out_dir}")
     print("sample record:", json.dumps(records[0], indent=2))
+    return 0
     return 0
 
 
