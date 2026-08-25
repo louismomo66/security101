@@ -168,7 +168,12 @@ def main() -> int:
         # it reads as a hang. We only ever keep `per_category_cap` per class, so
         # scan a multiple of that and sample from it — uniform enough for this,
         # and seconds rather than minutes.
-        scan_cap = max(args.per_category_cap * 10, 5000)
+        # Must account for --normal-cap, not just --per-category-cap. With
+        # `max(per_category_cap * 10, 5000)` a request for 15,000 Normal frames
+        # silently returned 5,000, and the mix ratio printed below would look
+        # like the flag simply had no effect.
+        want = max(args.per_category_cap, args.normal_cap or 0)
+        scan_cap = max(want * 10, 5000)
         by_category: dict[str, list[Path]] = {}
         for child in sorted(src.iterdir()):
             if not child.is_dir():

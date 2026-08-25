@@ -18,6 +18,37 @@ zero-shot FastVLM has never seen a surveillance frame in training; UCF Crime
 is real CCTV footage across 13 crime categories plus normal, exactly the
 domain gap a bigger checkpoint alone doesn't close.
 
+## Measured: the training mix sets the false-alarm rate
+
+LFM2.5-VL-1.6B, LoRA r=16, vision frozen (0.57% trainable), on 64x64 UCF
+frames from `odins0n/ucf-crime-dataset`. Two runs, identical except for how
+much of the training set was the Normal class:
+
+| Normal share | False alarms on ordinary frames | Crime-class match |
+|---|---|---|
+| 7% (balanced, the blog's recipe) | **34.8%** | 88.1% |
+| 49% (`--normal-cap 5000`) | **12.0%** | 43.6% |
+
+Read the first row carefully. 88.1% was measured on a *balanced* sample where
+Normal was 1 of 14 classes; a camera makes it ~99% of the input. The same
+checkpoint that scored 88.1% produced 34.8 false alarms per 100 ordinary
+frames — worse than the public weapon detector this project rejected at 19.9.
+
+Its hallucinations tracked the target frequencies exactly: "a theft" and
+"a theft, possible weapon" led, being the most common crime targets. The
+model had learned that something is usually wrong, because in its training
+set something usually was.
+
+Rebalancing cut false alarms 2.9x and halved crime recall. That is the trade,
+and for a system whose alerts land in front of a human reviewer it is the
+right side of it — but neither checkpoint is adoptable yet, and the numbers
+above are UCF's own normal frames, not Kampala streets.
+
+**The general lesson, now measured twice in this project:** balanced accuracy
+is silent about the only question deployment asks. The weapon detector reached
+the same conclusion from the object-detection side, where 286 domain negatives
+cut false alarms tenfold. Negatives buy precision; nothing else does.
+
 ## Honest scope, read before trusting a trained checkpoint
 
 **UCF Crime has video-level category labels, not frame-level weapon-holding
