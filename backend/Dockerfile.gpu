@@ -1,0 +1,41 @@
+# ── Backend Dockerfile (NVIDIA GPU) ───────────────────────────────────────
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-venv python3-pip \
+        libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 \
+        ffmpeg git \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+
+# Install PyTorch with CUDA, then the rest of the deps
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+        "torch==2.6.0" "torchvision==0.21.0" --index-url https://download.pytorch.org/whl/cu124 \
+    && pip install --no-cache-dir \
+        "transformers==4.48.3" "tokenizers==0.21.0" "sentencepiece==0.1.99" \
+        shortuuid "accelerate==1.6.0" "peft>=0.10.0,<0.14.0" bitsandbytes \
+        pydantic "markdown2[all]" "numpy==1.26.4" "scikit-learn==1.2.2" \
+        requests uvicorn fastapi \
+        "einops==0.6.1" "einops-exts==0.0.4" "timm==1.0.15" \
+        opencv-python-headless onnxruntime-gpu python-dotenv openai Pillow \
+        yt-dlp
+
+COPY . .
+
+RUN mkdir -p /app/logs
+
+EXPOSE 8000
+
+CMD ["python", "-m", "backend.server", \
+     "--model-path", "checkpoints/llava-fastvithd_0.5b_stage3", \
+     "--host", "0.0.0.0", "--port", "8000"]

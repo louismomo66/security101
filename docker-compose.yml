@@ -1,0 +1,62 @@
+# ── Sentinel — Docker Compose (CPU mode) ─────────────────────────────────────
+# Usage:
+#   docker compose up --build
+#
+# For NVIDIA GPU support, see docker-compose.gpu.yml
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount model checkpoints from host (avoids baking ~1.4 GB into the image)
+      - ./checkpoints:/app/checkpoints:ro
+      # Mount YOLO model files
+      - ./yolo11n.onnx:/app/yolo11n.onnx:ro
+      - ./yolo11n.pt:/app/yolo11n.pt:ro
+      - ./yolo11n-pose.onnx:/app/yolo11n-pose.onnx:ro
+      - ./yolo11n-pose.pt:/app/yolo11n-pose.pt:ro
+      # Persist logs on host
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Inside Docker, localhost is the container — use host.docker.internal to reach host services
+      - OLLAMA_URL=http://host.docker.internal:11434
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      args:
+        # Point the Next.js frontend at the backend service
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

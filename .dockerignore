@@ -1,0 +1,37 @@
+# ── Root .dockerignore ─────────────────────────────────────────────────────
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.egg-info
+
+# Model weights are mounted as volumes, not baked in
+checkpoints/
+*.onnx
+*.pt
+*.gguf
+*.bin
+*.safetensors
+
+# Frontend (built separately)
+frontend/node_modules
+frontend/.next
+frontend/.env.local
+
+# Misc
+logs/
+*.bak
+*.zip
+test_image.png
+yolo_ref/
+docs/
+app/
+model_export/
+.env
+README.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+ACKNOWLEDGEMENTS
+LICENSE
+LICENSE_MODEL

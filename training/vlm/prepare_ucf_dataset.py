@@ -1,0 +1,157 @@
+"""Build a fine-tuning set from UCF Crime, targeting Sentinel's own tier-3
+prompt format instead of a standalone JSON schema.
+
+Run this in Colab (or anywhere with internet — this project's own sandbox
+has huggingface.co blocked, so this script is unverified against the live
+dataset; check the printed sample count and a few examples before trusting
+the output).
+
+The source dataset (tanzzpatil/ucf-crime-small on HuggingFace) carries one
+category label per image, drawn from the 13 UCF Crime anomaly classes plus
+Normal. There is no frame-level weapon-holding ground truth and no
+free-text caption, so the training TARGET this script builds is templated
+from the category, not a genuine per-frame description. That is a real
+limitation: the model learns "frames from Robbery videos get labelled
+INCIDENT: theft, possible weapon", not "here is exactly what is happening
+in this specific frame". Good enough to teach the model the *shape* of a
+correct answer and the vocabulary of what counts as an incident; not a
+substitute for genuinely captioned data if that becomes available later.
+
+Target format matches backend/threat.py::ThreatEngine.threat_prompt()
+exactly, so a checkpoint trained on this can answer that real production
+prompt without any parsing changes downstream:
+
+    <one-sentence description>
+    INCIDENT: NONE
+    -- or --
+    <one-sentence description>
+    INCIDENT: <a few words naming what is happening>
+
+Usage
+-----
+    pip install datasets huggingface_hub
+    python -m training.vlm.prepare_ucf_dataset --out /content/drive/MyDrive/ucf_prepared
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import random
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
+
+# UCF Crime category -> (one-sentence description template, INCIDENT: line).
+# Description templates are deliberately generic (no genuine per-frame
+# caption exists in the source data) — they teach the model the *register*
+# of a correct Line 1, not a description of that specific frame's content.
+# INCIDENT: vocabulary matches threat_prompt()'s own examples ("a weapon, a
+# fight, a theft, forced entry, vandalism, fire, or an injured person") so
+# the fine-tune reinforces the exact words ingest_caption() screens for,
+# rather than teaching a different vocabulary that would need remapping.
+CATEGORY_TARGETS: dict[str, tuple[str, str]] = {
+    "Normal":       ("People are going about ordinary activity in the frame.", "NONE"),
+    "Abuse":        ("A person appears to be mistreating or threatening another person.", "an assault, an injured person"),
+    "Arrest":       ("Officers appear to be detaining or restraining a person.", "a struggle, a detainment"),
+    "Arson":        ("A fire appears to have been deliberately started.", "fire, arson"),
+    "Assault":      ("Two or more people appear to be in a physical altercation.", "a fight, an assault"),
+    "Burglary":     ("A person appears to be forcing entry into a building or vehicle.", "forced entry, a burglary"),
+    "Explosion":    ("An explosion or blast appears to be occurring.", "an explosion, fire"),
+    "Fighting":     ("Multiple people appear to be physically fighting.", "a fight"),
+    "Robbery":      ("A person appears to be taking property from another by force or threat.", "a theft, possible weapon"),
+    "Shooting":     ("A person appears to be holding or firing a firearm.", "a weapon, a shooting"),
+    "Shoplifting":  ("A person appears to be concealing store merchandise without paying.", "a theft"),
+    "Stealing":     ("A person appears to be taking an item that is not theirs.", "a theft"),
+    "Vandalism":    ("A person appears to be damaging property.", "vandalism"),
+    "RoadAccidents": ("A vehicle collision appears to have occurred.", "a road accident, an injured person"),
+}
+
+PROMPT = (
+    "You are reviewing a security camera frame.\n"
+    "Line 1: describe what the people are doing, in one sentence.\n"
+    "Line 2: write 'INCIDENT:' followed by NONE if nothing is wrong, or "
+    "else a few words naming what you actually see happening (for example "
+    "a weapon, a fight, a theft, forced entry, vandalism, fire, or an "
+    "injured person).\n"
+    "Do not list things that are absent."
+)
+
+
+def build_target(category: str) -> str:
+    desc, incident = CATEGORY_TARGETS.get(category, CATEGORY_TARGETS["Normal"])
+    return f"{desc}\nINCIDENT: {incident}"
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--out", required=True, help="output directory for prepared JSONL + images")
+    p.add_argument("--hf-dataset", default="tanzzpatil/ucf-crime-small")
+    p.add_argument("--per-category-cap", type=int, default=1000,
+                   help="max images per category, matching the blog's 26k/14-category balance")
+    p.add_argument("--holdout-frac", type=float, default=0.15)
+    p.add_argument("--seed", type=int, default=0)
+    args = p.parse_args()
+
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise SystemExit("pip install datasets huggingface_hub first")
+
+    out_dir = Path(args.out)
+    (out_dir / "images").mkdir(parents=True, exist_ok=True)
+
+    print(f"loading {args.hf_dataset} ...")
+    ds = load_dataset(args.hf_dataset, split="train")
+    print(f"loaded {len(ds)} rows; columns: {ds.column_names}")
+
+    # Best-effort column detection — HF dataset card conventions vary.
+    label_col = next((c for c in ("label", "category", "class") if c in ds.column_names), None)
+    image_col = next((c for c in ("image", "img") if c in ds.column_names), None)
+    if label_col is None or image_col is None:
+        raise SystemExit(
+            f"could not find label/image columns in {ds.column_names} — "
+            f"open the dataset card and adjust label_col/image_col above by hand."
+        )
+
+    by_category: dict[str, list[int]] = {}
+    names = ds.features[label_col].names if hasattr(ds.features[label_col], "names") else None
+    for i, row in enumerate(ds):
+        raw = row[label_col]
+        cat = names[raw] if names is not None and isinstance(raw, int) else str(raw)
+        by_category.setdefault(cat, []).append(i)
+
+    print("category counts (raw):", {k: len(v) for k, v in by_category.items()})
+
+    random.seed(args.seed)
+    records = []
+    img_idx = 0
+    for cat, idxs in by_category.items():
+        random.shuffle(idxs)
+        idxs = idxs[: args.per_category_cap]
+        target = build_target(cat if cat in CATEGORY_TARGETS else "Normal")
+        for i in idxs:
+            img = ds[i][image_col]
+            img_path = out_dir / "images" / f"{img_idx:07d}.jpg"
+            img.convert("RGB").save(img_path, quality=90)
+            records.append({"image": str(img_path.relative_to(out_dir)),
+                            "category": cat, "prompt": PROMPT, "response": target})
+            img_idx += 1
+
+    random.shuffle(records)
+    n_holdout = int(len(records) * args.holdout_frac)
+    holdout, train = records[:n_holdout], records[n_holdout:]
+
+    for name, split in (("train", train), ("holdout", holdout)):
+        with open(out_dir / f"{name}.jsonl", "w") as f:
+            for r in split:
+                f.write(json.dumps(r) + "\n")
+
+    print(f"\nwrote {len(train)} train / {len(holdout)} holdout examples to {out_dir}")
+    print("sample record:", json.dumps(records[0], indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

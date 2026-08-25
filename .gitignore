@@ -1,0 +1,64 @@
+# ── Source footage and anything derived from it ───────────────────────────
+# These are recordings of real people, several of them victims of the crimes
+# being detected. Frames, snapshots and mined negatives are all identifiable
+# imagery. None of it belongs in a code repository, whatever its visibility.
+videos/
+logs/
+*.mp4
+*.mov
+*.avi
+*.jpg
+*.jpeg
+*.png
+!frontend/public/**
+
+# ── Datasets ──────────────────────────────────────────────────────────────
+# Every image dataset under here is either derived from the source footage,
+# redistributed from a third party (Sohas is CC BY-SA and 1.8 GB), or both.
+# The label files are excluded alongside the images: on their own they are
+# thousands of files that reference pictures nobody else has.
+#
+# What IS tracked is the annotation CSVs — the human labelling work, which is
+# small, hand-made, and the part that would actually hurt to lose.
+training/data/weapons/
+training/data/**/images/
+training/data/**/labels/
+!training/data/*.csv
+
+# Archives: GitHub rejects anything over 100 MB and training/archive.zip is
+# 217 MB, which fails the push rather than warning about it.
+*.zip
+*.tar
+*.tar.gz
+*.npz
+
+# ── Model weights ─────────────────────────────────────────────────────────
+# Large, reproducible from the training scripts, and in the case of the
+# public weapon checkpoint, not ours to redistribute.
+checkpoints/
+*.onnx
+*.pt
+*.pth
+model_export/
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# ── Node ──────────────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+frontend/.env*.local
+
+# ── OS / editor ───────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+*.swp
+
+# Gradio runtime cache (vendored LLaVA demo)
+.gradio/

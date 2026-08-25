@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Weapon detector — tester</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, system-ui, sans-serif; background:#111; color:#eee;
+         max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.3rem; margin-bottom: 2px; }
+  .sub { color:#999; font-size:0.85rem; margin-bottom: 20px; }
+  .status { font-size:0.85rem; padding:8px 12px; border-radius:8px; background:#1c1c1c;
+            border:1px solid #333; margin-bottom:20px; }
+  .status.ok { border-color:#2a5; color:#7f7; }
+  .status.bad { border-color:#a33; color:#f88; }
+  .drop { border:2px dashed #444; border-radius:12px; padding:32px; text-align:center;
+          cursor:pointer; transition: border-color .15s; }
+  .drop.hover { border-color:#5af; }
+  .drop input { display:none; }
+  .controls { display:flex; gap:16px; flex-wrap:wrap; margin: 16px 0; align-items:center; }
+  .controls label { font-size:0.85rem; color:#aaa; display:flex; gap:6px; align-items:center; }
+  input[type=range] { width:140px; }
+  button.run { background:#2563eb; color:#fff; border:none; padding:10px 20px;
+               border-radius:8px; font-size:0.95rem; cursor:pointer; }
+  button.run:disabled { background:#333; color:#777; cursor:default; }
+  .result { margin-top:24px; }
+  .result img { max-width:100%; border-radius:8px; border:1px solid #333; }
+  .det { display:inline-block; margin:2px 6px 2px 0; padding:3px 8px; border-radius:6px;
+         font-size:0.8rem; background:#222; border:1px solid #444; }
+  .det.gun { border-color:#e33; color:#f88; }
+  .det.knife { border-color:#e93; color:#fb8; }
+  table { width:100%; border-collapse:collapse; margin-top:12px; font-size:0.85rem; }
+  td, th { padding:8px; border-bottom:1px solid #222; text-align:left; vertical-align:top; }
+  th { color:#999; font-weight:500; }
+  .hitimg { width:160px; border-radius:6px; }
+  .summary { color:#aaa; font-size:0.9rem; margin-top:8px; }
+  .empty { color:#888; font-style:italic; padding:16px 0; }
+</style>
+</head>
+<body>
+  <h1>Weapon detector — tester</h1>
+  <div class="sub">Standalone. Only the weapon model runs here, nothing else in the Sentinel pipeline.</div>
+  <div id="status" class="status">checking model status…</div>
+
+  <div class="drop" id="drop">
+    <div id="dropLabel">Drop an image or video here, or click to choose a file</div>
+    <input type="file" id="file" accept="image/*,video/*">
+  </div>
+
+  <div class="controls">
+    <label>confidence <input type="range" id="conf" min="0.1" max="0.9" step="0.05" value="0.45">
+      <span id="confVal">0.45</span></label>
+    <label>sample every <input type="range" id="every" min="0.5" max="3" step="0.5" value="1.0">
+      <span id="everyVal">1.0s</span> (video only)</label>
+    <button class="run" id="run" disabled>Run detection</button>
+  </div>
+
+  <div id="result" class="result"></div>
+
+  <hr style="border-color:#222; margin:32px 0;">
+
+  <h1>Live view</h1>
+  <div class="sub">
+    Streams frame-by-frame as it processes. CPU inference is roughly
+    0.3-0.5s/frame at this model's resolution, so this plays noticeably
+    slower than real time — it's for watching where detections land, not a
+    live camera feed.
+  </div>
+
+  <div class="controls">
+    <label>source
+      <select id="localVideoSelect"><option value="">— pick a local video —</option></select>
+    </label>
+    <label>confidence <input type="range" id="liveConf" min="0.1" max="0.9" step="0.05" value="0.45">
+      <span id="liveConfVal">0.45</span></label>
+    <label>skip <input type="range" id="liveStride" min="1" max="10" step="1" value="3">
+      <span id="liveStrideVal">3</span> frames between inferences</label>
+  </div>
+  <div class="controls">
+    <button class="run" id="liveLocalBtn">Watch local video</button>
+    <button class="run" id="liveUploadBtn" disabled>Watch uploaded file live</button>
+    <button class="run" id="liveStopBtn" style="background:#444;" disabled>Stop</button>
+  </div>
+  <div id="liveWrap" style="margin-top:16px;"></div>
+
+<script>
+const statusEl = document.getElementById('status');
+const dropEl = document.getElementById('drop');
+const dropLabel = document.getElementById('dropLabel');
+const fileEl = document.getElementById('file');
+const confEl = document.getElementById('conf');
+const confVal = document.getElementById('confVal');
+const everyEl = document.getElementById('every');
+const everyVal = document.getElementById('everyVal');
+const runEl = document.getElementById('run');
+const resultEl = document.getElementById('result');
+
+let chosenFile = null;
+
+confEl.oninput = () => confVal.textContent = confEl.value;
+everyEl.oninput = () => everyVal.textContent = everyEl.value + 's';
+
+fetch('/api/status').then(r => r.json()).then(s => {
+  if (s.loaded) {
+    statusEl.className = 'status ok';
+    statusEl.textContent = `model loaded: ${s.model} — classes: ${s.classes.join(', ')}`;
+  } else {
+    statusEl.className = 'status bad';
+    statusEl.textContent = 'no model loaded — check server startup args';
+  }
+}).catch(() => {
+  statusEl.className = 'status bad';
+  statusEl.textContent = 'could not reach server';
+});
+
+dropEl.onclick = () => fileEl.click();
+dropEl.ondragover = (e) => { e.preventDefault(); dropEl.classList.add('hover'); };
+dropEl.ondragleave = () => dropEl.classList.remove('hover');
+dropEl.ondrop = (e) => {
+  e.preventDefault(); dropEl.classList.remove('hover');
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+};
+fileEl.onchange = () => { if (fileEl.files.length) setFile(fileEl.files[0]); };
+
+function setFile(f) {
+  chosenFile = f;
+  dropLabel.textContent = `${f.name} (${(f.size/1e6).toFixed(1)} MB)`;
+  runEl.disabled = false;
+  resultEl.innerHTML = '';
+}
+
+runEl.onclick = async () => {
+  if (!chosenFile) return;
+  runEl.disabled = true;
+  runEl.textContent = 'Running…';
+  resultEl.innerHTML = '<div class="empty">processing…</div>';
+
+  const isVideo = chosenFile.type.startsWith('video') ||
+                  /\.(mp4|mov|avi|mkv)$/i.test(chosenFile.name);
+  const form = new FormData();
+  form.append('file', chosenFile);
+  form.append('conf', confEl.value);
+  if (isVideo) form.append('every_s', everyEl.value);
+
+  try {
+    const res = await fetch(isVideo ? '/api/detect/video' : '/api/detect/image',
+                            { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.error) { resultEl.innerHTML = `<div class="empty">${data.error}</div>`; return; }
+    isVideo ? renderVideo(data) : renderImage(data);
+  } catch (e) {
+    resultEl.innerHTML = `<div class="empty">request failed: ${e}</div>`;
+  } finally {
+    runEl.disabled = false;
+    runEl.textContent = 'Run detection';
+  }
+};
+
+function detChips(dets) {
+  if (!dets.length) return '<span class="empty">no detections</span>';
+  return dets.map(d => `<span class="det ${d.class}">${d.class} ${d.confidence}</span>`).join('');
+}
+
+function renderImage(data) {
+  resultEl.innerHTML = `
+    <img src="data:image/jpeg;base64,${data.annotated_jpg_b64}">
+    <div class="summary">${detChips(data.detections)}</div>
+  `;
+}
+
+function renderVideo(data) {
+  const rows = data.hits.map(h => `
+    <tr>
+      <td><img class="hitimg" src="data:image/jpeg;base64,${h.thumb_jpg_b64}"></td>
+      <td>${h.t_s.toFixed(1)}s</td>
+      <td>${detChips(h.detections)}</td>
+    </tr>`).join('');
+  resultEl.innerHTML = `
+    <div class="summary">
+      ${data.frames_with_hit} / ${data.frames_sampled} sampled frames had a detection
+      (duration ${data.duration_s}s, ${data.elapsed_s}s to process)
+      ${data.truncated ? ' — showing first hits only' : ''}
+    </div>
+    ${rows ? `<table><tr><th></th><th>time</th><th>detections</th></tr>${rows}</table>`
+           : '<div class="empty">no detections at this confidence</div>'}
+  `;
+}
+
+// ── Live view ──────────────────────────────────────────────────────────
+const localVideoSelect = document.getElementById('localVideoSelect');
+const liveConf = document.getElementById('liveConf');
+const liveConfVal = document.getElementById('liveConfVal');
+const liveStride = document.getElementById('liveStride');
+const liveStrideVal = document.getElementById('liveStrideVal');
+const liveLocalBtn = document.getElementById('liveLocalBtn');
+const liveUploadBtn = document.getElementById('liveUploadBtn');
+const liveStopBtn = document.getElementById('liveStopBtn');
+const liveWrap = document.getElementById('liveWrap');
+
+liveConf.oninput = () => liveConfVal.textContent = liveConf.value;
+liveStride.oninput = () => liveStrideVal.textContent = liveStride.value;
+
+fetch('/api/local_videos').then(r => r.json()).then(d => {
+  for (const name of d.videos) {
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    localVideoSelect.appendChild(opt);
+  }
+});
+
+function startLive(src) {
+  liveWrap.innerHTML = `<img src="${src}" style="max-width:100%; border-radius:8px; border:1px solid #333;">`;
+  liveStopBtn.disabled = false;
+}
+
+function stopLive() {
+  liveWrap.innerHTML = '';
+  liveStopBtn.disabled = true;
+}
+
+liveLocalBtn.onclick = () => {
+  if (!localVideoSelect.value) return;
+  const params = new URLSearchParams({
+    name: localVideoSelect.value, conf: liveConf.value, stride: liveStride.value,
+  });
+  startLive(`/api/live/stream_local?${params}`);
+};
+
+liveUploadBtn.onclick = async () => {
+  if (!chosenFile) return;
+  liveUploadBtn.disabled = true;
+  liveUploadBtn.textContent = 'uploading…';
+  try {
+    const form = new FormData();
+    form.append('file', chosenFile);
+    const res = await fetch('/api/live/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    const params = new URLSearchParams({
+      conf: liveConf.value, stride: liveStride.value,
+    });
+    startLive(`/api/live/stream/${data.id}?${params}`);
+  } finally {
+    liveUploadBtn.disabled = false;
+    liveUploadBtn.textContent = 'Watch uploaded file live';
+  }
+};
+
+liveStopBtn.onclick = stopLive;
+
+// enable the "watch uploaded file live" button once a video is chosen above
+const _origSetFile = setFile;
+setFile = function(f) {
+  _origSetFile(f);
+  const isVideo = f.type.startsWith('video') || /\.(mp4|mov|avi|mkv)$/i.test(f.name);
+  liveUploadBtn.disabled = !isVideo;
+};
+</script>
+</body>
+</html>

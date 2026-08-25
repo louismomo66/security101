@@ -1,0 +1,78 @@
+# ── Sentinel — Docker Compose DEV mode ───────────────────────────────────────
+# Hot-reload: source code is mounted from host — no rebuild needed for code changes.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up
+#
+# First time only (to build the base images):
+#   docker compose -f docker-compose.dev.yml up --build
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # ── Mount source code for hot-reload (uvicorn --reload watches these) ──
+      - ./backend:/app/backend
+      - ./llava:/app/llava
+      - ./detectors:/app/detectors
+      - ./action:/app/action
+      - ./camera.py:/app/camera.py
+      # ── Mount models from host ──
+      - ./checkpoints:/app/checkpoints:ro
+      - ./yolo11n.onnx:/app/yolo11n.onnx:ro
+      - ./yolo11n.pt:/app/yolo11n.pt:ro
+      - ./yolo11n-pose.onnx:/app/yolo11n-pose.onnx:ro
+      - ./yolo11n-pose.pt:/app/yolo11n-pose.pt:ro
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OLLAMA_URL=http://host.docker.internal:11434
+    env_file:
+      - .env
+    # Override CMD to use --reload for auto-restart on code changes
+    command:
+      [
+        "python",
+        "-m",
+        "uvicorn",
+        "backend.server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app/backend",
+        "--reload-dir",
+        "/app/detectors",
+        "--reload-dir",
+        "/app/llava",
+      ]
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
