@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -127,13 +128,27 @@ def main() -> int:
         if not src.is_dir():
             raise SystemExit(f"--src is not a directory: {src}")
         exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+        # Enumeration is bounded, and that matters more than it looks. UCF-Crime
+        # copies run to ~1.27M files; on Kaggle's network-backed /kaggle/input a
+        # full rglob takes many minutes and produces no output while it runs, so
+        # it reads as a hang. We only ever keep `per_category_cap` per class, so
+        # scan a multiple of that and sample from it — uniform enough for this,
+        # and seconds rather than minutes.
+        scan_cap = max(args.per_category_cap * 10, 5000)
         by_category: dict[str, list[Path]] = {}
         for child in sorted(src.iterdir()):
             if not child.is_dir():
                 continue
-            files = [f for f in child.rglob("*") if f.suffix.lower() in exts]
+            files: list[Path] = []
+            for entry in os.scandir(child):          # one level; UCF is flat
+                if entry.is_file() and Path(entry.name).suffix.lower() in exts:
+                    files.append(Path(entry.path))
+                    if len(files) >= scan_cap:
+                        break
             if files:
                 by_category[child.name] = files
+                print(f"  {child.name}: scanned {len(files)}"
+                      f"{' (capped)' if len(files) >= scan_cap else ''}", flush=True)
         if not by_category:
             raise SystemExit(
                 f"no class subfolders with images under {src}.\n"
