@@ -96,7 +96,13 @@ def main() -> int:
 
     prompt = ThreatEngine().threat_prompt()
 
-    ann = load(ROOT / args.annotations)
+    # root=ROOT, not the CSV's own directory. The paths in annotations.csv are
+    # written relative to the project root ("videos/..."), so letting `load`
+    # default to the CSV's parent resolves them under training/data/videos/,
+    # every span is skipped as missing, and the summary reports "no data" —
+    # which reads like a model that produced nothing rather than a run that
+    # never opened a video.
+    ann = load(ROOT / args.annotations, root=ROOT)
     print(f"model: {args.model}")
     print(f"{len(ann.spans)} labelled spans in {args.annotations}\n")
 

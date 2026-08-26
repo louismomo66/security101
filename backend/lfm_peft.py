@@ -31,6 +31,13 @@ from __future__ import annotations
 import os
 import threading
 
+# Must be set before torch dispatches its first op. SigLIP2 resizes positional
+# embeddings with `aten::_upsample_bilinear2d_aa`, which PyTorch has not
+# implemented for MPS — on Apple Silicon the run dies mid-generation with
+# NotImplementedError. This falls that single op back to CPU; the rest of the
+# model still runs on the GPU.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import numpy as np
 
 _model = None
@@ -68,8 +75,15 @@ def init_lfm_peft():
     base_id = os.environ.get("SENTINEL_LFM_BASE", "").strip() or DEFAULT_BASE
     device = _resolve_device()
     # No bitsandbytes: it is CUDA-only, and this path exists to run on a laptop.
-    # fp16 of a 1.6B model is ~3.2 GB, which fits in unified memory.
-    dtype = torch.float16 if device != "cpu" else torch.float32
+    #
+    # float32 outside CUDA, and that is not a preference. SigLIP2 resizes its
+    # positional embeddings with `_upsample_bilinear2d_aa`, which MPS does not
+    # implement at all; PYTORCH_ENABLE_MPS_FALLBACK sends it to CPU, where it
+    # has no half-precision kernel either ("compute_index_ranges_weights not
+    # implemented for 'Half'"). fp16 therefore fails on Apple Silicon in both
+    # directions. fp32 costs ~6.4 GB for a 1.6B model, so on an 8 GB machine
+    # stop the backend first or run this somewhere with more memory.
+    dtype = torch.float16 if device == "cuda" else torch.float32
 
     print(f"Loading {base_id} on {device} ({dtype})…")
     model = AutoModelForImageTextToText.from_pretrained(
