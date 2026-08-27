@@ -49,6 +49,57 @@ is silent about the only question deployment asks. The weapon detector reached
 the same conclusion from the object-detection side, where 286 domain negatives
 cut false alarms tenfold. Negatives buy precision; nothing else does.
 
+## Measured on this project's own footage — 2026-08-27
+
+`lfm_normheavy_lora` (49% normal mix) against `training/data/annotations.csv`:
+five confirmed `phone_snatch` spans and one confirmed `normal` span, judged
+through `ingest_caption()`'s own regexes.
+
+| | UCF holdout (64x64) | Kampala footage (360p) |
+|---|---|---|
+| False alarms on normal | 12.0% | **36%** (7/11 correct) |
+| Incident detection | 43.6% | **14%** (5/37 frames) |
+
+**0 malformed.** The trained output format held perfectly on out-of-domain
+footage; only the judgement degraded. Both numbers fell ~3x crossing from UCF
+to real streets — the domain gap, quantified.
+
+Per span:
+
+| Span | Correct | Pose: frames with 2 skeletons |
+|---|---|---|
+| Naalya 0-11s | 0/6 | 0/23 |
+| Kawempe 16-26s | 1/6 | 0/21 |
+| Kajjansi 26-36s | 0/6 | 0/21 |
+| normal 36-57s | 7/11 | — |
+| **Gayaza 64-72s** | **4/4** | **5/16** |
+| Junction 77-107s | 0/15 | 5/60 |
+
+The only span it scores perfectly is the only one where both bodies are
+visible. That is the same conclusion the skeleton model and the weapon
+detector reached independently: these incidents are not recorded at a
+resolution any model can read.
+
+**Verdict: not usable.** 36 false alarms per 100 ordinary frames is worse than
+the public weapon detector this project rejected at 19.9. Do not set
+SENTINEL_VLM_BACKEND=lfm on this checkpoint.
+
+### Bugs that stood between the adapter and this number
+
+Worth recording, because all four failed *silently* — none raised at the point
+of the mistake:
+
+1. `annotations.load()` resolves relative video paths against the CSV's own
+   directory. Every span was skipped and the summary read "no data".
+2. The base checkpoint ships **no lm_head** (589 tensors, none matching) and
+   sets no `tie_word_embeddings`, so `from_pretrained` randomly initialised the
+   output projection and the model emitted fluent multilingual noise.
+   `tie_weights()` is a no-op here; the Parameter must be shared by hand.
+3. `apply_chat_template` tokenises by default in transformers 5.x, so the 4.x
+   two-step idiom fed token ids in as a string.
+4. fp16 cannot run this model on Apple Silicon: MPS lacks
+   `_upsample_bilinear2d_aa` and its CPU fallback has no half kernel.
+
 ## Honest scope, read before trusting a trained checkpoint
 
 **UCF Crime has video-level category labels, not frame-level weapon-holding
