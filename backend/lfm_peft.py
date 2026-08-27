@@ -86,8 +86,24 @@ def init_lfm_peft():
     dtype = torch.float16 if device == "cuda" else torch.float32
 
     print(f"Loading {base_id} on {device} ({dtype})…")
-    model = AutoModelForImageTextToText.from_pretrained(
-        base_id, dtype=dtype, trust_remote_code=True)
+    model = AutoModelForImageTextToText.from_pretrained(base_id, dtype=dtype)
+
+    # LFM2.5-VL ties lm_head to embed_tokens, so the checkpoint carries no
+    # lm_head.weight. from_pretrained reports it MISSING and *randomly
+    # initialises it* — the model then loads without error and emits fluent
+    # multilingual noise, because its output projection is untrained. Tying is
+    # what Unsloth's loader does for this architecture; doing it by hand is the
+    # difference between coherent text and token salad.
+    model.tie_weights()
+    out_w = model.get_output_embeddings()
+    in_w = model.get_input_embeddings()
+    if out_w is not None and in_w is not None and out_w.weight.data_ptr() != in_w.weight.data_ptr():
+        raise RuntimeError(
+            "lm_head is not tied to embed_tokens after tie_weights(). The model "
+            "would generate noise — refusing to continue rather than reporting "
+            "meaningless scores."
+        )
+
     print(f"Applying adapter {adapter}…")
     model = PeftModel.from_pretrained(model, adapter)
     model.to(device).eval()
