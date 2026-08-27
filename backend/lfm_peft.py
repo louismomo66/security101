@@ -88,21 +88,33 @@ def init_lfm_peft():
     print(f"Loading {base_id} on {device} ({dtype})…")
     model = AutoModelForImageTextToText.from_pretrained(base_id, dtype=dtype)
 
-    # LFM2.5-VL ties lm_head to embed_tokens, so the checkpoint carries no
-    # lm_head.weight. from_pretrained reports it MISSING and *randomly
-    # initialises it* — the model then loads without error and emits fluent
-    # multilingual noise, because its output projection is untrained. Tying is
-    # what Unsloth's loader does for this architecture; doing it by hand is the
-    # difference between coherent text and token salad.
-    model.tie_weights()
+    # LFM2.5-VL's checkpoint contains no lm_head tensor — 589 tensors, none
+    # matching lm_head — because the output projection is meant to share the
+    # input embedding. `tie_word_embeddings` is absent from its config, so
+    # from_pretrained reports lm_head.weight MISSING, *randomly initialises
+    # it*, and returns a model that loads cleanly and generates fluent
+    # multilingual noise from an untrained output layer.
+    #
+    # model.tie_weights() is a no-op here: it consults a config flag that is
+    # not set, and does not traverse this composite VL architecture. So share
+    # the Parameter object directly. Unsloth's loader does the equivalent,
+    # which is why the same adapter produced coherent output in the training
+    # notebook and garbage through this path.
     out_w = model.get_output_embeddings()
     in_w = model.get_input_embeddings()
-    if out_w is not None and in_w is not None and out_w.weight.data_ptr() != in_w.weight.data_ptr():
+    if out_w is None or in_w is None:
+        raise RuntimeError("cannot locate input/output embeddings to tie")
+    if out_w.weight.data_ptr() != in_w.weight.data_ptr():
+        if out_w.weight.shape != in_w.weight.shape:
+            raise RuntimeError(
+                f"cannot tie lm_head {tuple(out_w.weight.shape)} to embeddings "
+                f"{tuple(in_w.weight.shape)} — shapes differ")
+        out_w.weight = in_w.weight
+        print("tied lm_head to embed_tokens (checkpoint ships no lm_head)")
+    if out_w.weight.data_ptr() != in_w.weight.data_ptr():
         raise RuntimeError(
-            "lm_head is not tied to embed_tokens after tie_weights(). The model "
-            "would generate noise — refusing to continue rather than reporting "
-            "meaningless scores."
-        )
+            "lm_head is still untied — the model would generate noise. "
+            "Refusing to continue rather than report meaningless scores.")
 
     print(f"Applying adapter {adapter}…")
     model = PeftModel.from_pretrained(model, adapter)
