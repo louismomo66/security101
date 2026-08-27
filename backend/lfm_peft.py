@@ -114,13 +114,19 @@ def run_vlm_lfm_peft(image, prompt: str = "", max_tokens: int = 96,
         image = Image.fromarray(image)
     image = image.convert("RGB")
 
+    # Let the processor build the inputs in one step, with the image carried
+    # inside the message. The two-step form — apply_chat_template() then
+    # processor(image, text) — is a transformers 4.x idiom: in 5.x
+    # apply_chat_template tokenises by default, so the "text" handed back is a
+    # tensor of ids. Feeding that in as a string produced fluent multilingual
+    # garbage rather than an error, which is a much worse failure than a crash.
     messages = [{"role": "user", "content": [
-        {"type": "image"},
+        {"type": "image", "image": image},
         {"type": "text", "text": prompt},
     ]}]
-    text = _processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = _processor(image, text, add_special_tokens=False,
-                        return_tensors="pt").to(_model.device)
+    inputs = _processor.apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=True,
+        return_dict=True, return_tensors="pt").to(_model.device)
 
     # Serialised: one model instance, and callers may be threaded.
     with _lock, torch.no_grad():
