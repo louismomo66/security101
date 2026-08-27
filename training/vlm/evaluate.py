@@ -75,6 +75,8 @@ def main() -> int:
     p.add_argument("--annotations", default="training/data/annotations.csv")
     p.add_argument("--every", type=float, default=2.0, help="seconds between sampled frames")
     p.add_argument("--max-frames-per-span", type=int, default=15)
+    p.add_argument("--show-malformed", type=int, default=6,
+                   help="print this many raw generations that failed to parse, so a malformed count becomes a diagnosis")
     args = p.parse_args()
 
     import os
@@ -107,6 +109,7 @@ def main() -> int:
     print(f"{len(ann.spans)} labelled spans in {args.annotations}\n")
 
     results = []  # (label, expected_incident, flagged, malformed)
+    shown = 0
     for span in ann.spans:
         video_path = ROOT / span.video
         if not video_path.exists():
@@ -124,6 +127,14 @@ def main() -> int:
             f = flagged(text)
             if f is None:
                 malformed += 1
+                # "N malformed" is not a diagnosis. A model that emits nothing,
+                # a model that describes the scene without the INCIDENT: line,
+                # and a model whose output is being truncated all count the
+                # same here — and they need completely different fixes. Show
+                # the first few so the failure is legible.
+                if shown < args.show_malformed:
+                    shown += 1
+                    print(f"    [malformed {shown}] {text[:300]!r}")
                 continue
             correct = (f == expected_incident)
             hits += int(correct)
