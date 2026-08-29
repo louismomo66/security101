@@ -307,6 +307,43 @@ class ThreatConfig:
     hit_and_run_window_s: float = 25.0      # departure after impact still counts
     hit_and_run_min_speed: float = 0.04     # departure must be under power
 
+    # Trajectory snatch. The only rule here that works at the resolution our
+    # own footage actually has. Pose finds two skeletons in 0/23 frames at
+    # Naalya because the figures are ~20px; a *box centre over time* survives
+    # that, and detection does find the motorcycle (5-12 detections across the
+    # same span). So this reads the shape of the event rather than the bodies:
+    #
+    #   a vehicle closes on a pedestrian, they are briefly co-located, and the
+    #   vehicle leaves *faster than it arrived* instead of slowing down.
+    #
+    # That last clause is what separates a snatch from a collision and from a
+    # boda simply passing someone. `_rule_vehicles` already looks for impact
+    # deceleration; this looks for its opposite.
+    #
+    # It cannot detect pickpocketing — that genuinely needs the hand — so this
+    # narrows the system to snatch-from-vehicle, which is where five of our six
+    # confirmed spans sit anyway.
+    # MEASURED 2026-08-29: fires 0/5 on our confirmed spans and 0/1 on the
+    # normal span. Not a threshold problem — the tracks do not exist. Over an
+    # 11s span the tracker creates 28 IDs with a MEDIAN AGE OF 0.00s and a
+    # median history of one point, so speed() (which needs two) returns 0 and
+    # the approach gate rejects everything. Detections at 360p flicker in and
+    # out frame to frame and identity cannot survive the gaps.
+    #
+    # So low resolution defeats tracking as well as pose. Left enabled because
+    # the rule is sound and costs nothing when tracks are empty; it should
+    # start working on footage where detection is stable. Re-measure before
+    # trusting it, and consider a Kalman/ByteTrack-style tracker first —
+    # SimpleTracker does nearest-box matching with no motion prediction, so it
+    # cannot bridge a missed frame.
+    snatch_trajectory: bool = True
+    snatch_approach_speed: float = 0.03     # vehicle must actually be moving
+    snatch_contact_frac: float = 0.10       # centres within this × frame diagonal
+    snatch_max_contact_s: float = 2.5       # a snatch is brief; a pickup is not
+    snatch_departure_ratio: float = 1.05    # leaves at >= this × approach speed
+    snatch_departure_s: float = 2.0         # window watched after separation
+    snatch_min_score: float = 0.45
+
     # Action-based rules
     action_conf: float = 0.40
     # Brief, rare classes get a lower bar. A snatch lasts ~0.2 s, so even the
@@ -587,6 +624,7 @@ class ThreatEngine:
         # Collision bookkeeping
         self._contacts: dict[tuple[int, int], dict] = {}
         self._recent_collisions: dict[int, dict] = {}   # track_id → collision record
+        self._snatch_contacts: dict[str, dict] = {}     # vehicle:person → encounter
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -648,6 +686,7 @@ class ThreatEngine:
         out: list[dict] = []
         out += self._rule_weapon(detections, persons, pose_persons, now)
         out += self._rule_vehicles(detections, persons, now)
+        out += self._rule_snatch_trajectory(now)
         out += self._rule_violent_action(action, persons, now,
                                          people_count=people_count)
         out += self._rule_distress(action, now)
@@ -756,6 +795,7 @@ class ThreatEngine:
         self._person_history.clear()
         self._contacts.clear()
         self._recent_collisions.clear()
+        self._snatch_contacts.clear()
         self._video_time_s = None
         self._frame_index = None
 
@@ -880,6 +920,87 @@ class ThreatEngine:
         return out
 
     # ── vehicles ──────────────────────────────────────────────────────────
+
+    def _rule_snatch_trajectory(self, now: float) -> list[dict]:
+        """A snatch read from box trajectories, not from bodies.
+
+        Fires when a vehicle closes on a pedestrian, is briefly beside them,
+        and then leaves *faster than it arrived*. The departure clause is the
+        whole rule: a collision decelerates, a passing boda holds its speed, a
+        pickup lingers. Only a snatch accelerates away from a momentary contact.
+
+        Deliberately blind to what happened between the two boxes — at 20px
+        there is nothing to see there. It reads the shape of the encounter.
+        """
+        cfg = self.config
+        if not cfg.snatch_trajectory:
+            return []
+        diag = self._frame_diag or 1.0
+        live = [t for t in self.tracker.tracks.values() if t.misses == 0]
+        vehicles = [t for t in live if t.cls in VEHICLE_CLASSES]
+        people = [t for t in live if t.cls == "person"]
+        out: list[dict] = []
+
+        for v in vehicles:
+            for p in people:
+                key = f"snatch:{v.track_id}:{p.track_id}"
+                rec = self._snatch_contacts.get(key)
+                close = _dist(v.centroid, p.centroid) / diag <= cfg.snatch_contact_frac
+
+                if close:
+                    if rec is None:
+                        # Record the approach speed *now*, before contact: after
+                        # separation the speed history is dominated by the
+                        # departure and the arrival is no longer recoverable.
+                        approach = v.peak_speed(now - 2.0, now) / diag
+                        if approach < cfg.snatch_approach_speed:
+                            continue
+                        self._snatch_contacts[key] = {
+                            "start": now, "approach": approach,
+                            "vid": v.track_id, "pid": p.track_id, "fired": False}
+                    continue
+
+                if rec is None or rec["fired"]:
+                    continue
+
+                contact_s = now - rec["start"]
+                since_sep = now - (rec.get("separated") or now)
+                rec.setdefault("separated", now)
+                if contact_s > cfg.snatch_max_contact_s:
+                    # Too long beside each other to be a snatch — a drop-off, a
+                    # conversation, traffic. Drop it rather than let it ripen.
+                    self._snatch_contacts.pop(key, None)
+                    continue
+                if since_sep < cfg.snatch_departure_s:
+                    continue                      # not enough departure to judge
+
+                departure = v.peak_speed(rec["separated"], now) / diag
+                ratio = departure / rec["approach"] if rec["approach"] > 1e-6 else 0.0
+                if ratio < cfg.snatch_departure_ratio:
+                    self._snatch_contacts.pop(key, None)
+                    continue
+
+                # Brief contact and a faster exit. Score on how much faster and
+                # how brief — both are what distinguishes this from traffic.
+                score = min(1.0, 0.40 + 0.25 * min(ratio - 1.0, 1.0)
+                            + 0.25 * (1.0 - contact_s / cfg.snatch_max_contact_s))
+                rec["fired"] = True
+                if score < cfg.snatch_min_score:
+                    continue
+                out.append(self._make_event(
+                    etype="snatch_theft", label="Possible snatch from vehicle",
+                    category="trajectory", severity="high", score=round(score, 3),
+                    rule="snatch_trajectory",
+                    detail=(f"{v.cls} closed on a pedestrian, {contact_s:.1f}s "
+                            f"alongside, then left at {ratio:.2f}x its approach speed"),
+                    evidence={"vehicle_track": v.track_id, "person_track": p.track_id,
+                              "contact_s": round(contact_s, 2),
+                              "approach_speed": round(rec["approach"], 4),
+                              "departure_speed": round(departure, 4),
+                              "speed_ratio": round(ratio, 2)},
+                    now=now, subject={"class": v.cls, "box": v.box},
+                    cooldown_key=key))
+        return out
 
     def _rule_vehicles(self, detections: list[dict], persons: list[dict],
                        now: float) -> list[dict]:
