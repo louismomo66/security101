@@ -115,6 +115,33 @@ windows now return `insufficient_evidence` — correct on the negatives, honest
 on the positive. **Next: the 1.5B checkpoint** (`get_models.sh`), then re-run
 the table. Tier 3 stays off by default until it beats these numbers.
 
+**3b. The architecture is validated — measured 2026-08-29.** The ST-GCN was
+fine-tuned on PoseLift (WACV 2025, Apache-2.0): pre-extracted AlphaPose
+skeletons from 1080p retail cameras, converted by
+`training/convert_poselift.py` into 151 clips (33 `pickpocket`, 118 `normal`).
+58 of them have both person slots populated in >20% of frames — against **zero**
+in our own incident spans.
+
+```
+accuracy 0.857   macro-F1 0.810      (val: 28 clips, 6 pickpocket)
+normal      prec 0.950  recall 0.864
+pickpocket  prec 0.625  recall 0.833     5 of 6 detected
+```
+
+**On our own footage the same architecture detects 1 of 6.** The difference is
+entirely skeleton quality. This is the answer to the question that could not be
+asked with our own data: the ST-GCN does learn a two-person interaction when it
+is given one. The method is sound; the input is the blocker.
+
+Three caveats, all real. The val set is 28 clips with 6 positives, so 5/6 recall
+carries enormous error bars. PoseLift is **indoor retail shoplifting** — one
+person concealing an item, not a grab followed by two bodies separating at
+speed. And 13.6% of normal clips were misflagged, which the trainer itself
+flags as too high for a busy camera.
+
+Checkpoint: `checkpoints/stgcn_poselift.pth`. Not wired into the app —
+`ACTION_MODEL_PATH` still points at the NTU120 checkpoint.
+
 **4. Ground truth: seven confirmed incidents.** 1:19 in `The youngest phone
 snatcher…`, plus all of `Weird street crimes in Uganda…` labelled by the
 operator on 2026-08-09. That clip is a **police compilation that annotates its
