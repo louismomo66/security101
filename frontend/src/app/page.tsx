@@ -315,7 +315,6 @@ export default function Home() {
 
   /* Global search */
   const [globalSearch, setGlobalSearch] = useState("");
-  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
 
   /* Bandwidth */
   const [bandwidth, setBandwidth] = useState(0);
@@ -358,6 +357,14 @@ export default function Home() {
      height from the video, and the video resizing mid-incident is worse than
      having to click to read the list. Expansion is user-driven only. */
   const [alertsExpanded, setAlertsExpanded] = useState(false);
+  // The analysed view is the product; the raw feed and captions are debugging
+  // aids. Off by default so the video gets the full width — they cost ~320px,
+  // which on a laptop is a third of the frame.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Detections / actions / reports held a fixed 40vh — nearly half the window
+  // — whether or not anything was in them. Collapsed by default; the video is
+  // what a viewer is here to watch.
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   /* Action log */
   const [actionLog, setActionLog] = useState<
@@ -742,9 +749,12 @@ export default function Home() {
           >
             <GearIcon className="w-4 h-4" />
           </button>
+          {/* Detections / actions / reports — 40vh when open. */}
           <button
-            onClick={() => setGlobalSearchOpen(!globalSearchOpen)}
-            className={`p-1.5 rounded-full transition-colors ${globalSearchOpen ? "bg-cyan-600 text-white" : "bg-slate-800 text-slate-400 hover:text-slate-200"}`}
+            onClick={() => setDetailsOpen((v) => !v)}
+            title={detailsOpen ? "Hide details panel" : "Show detections, actions & reports"}
+            aria-pressed={detailsOpen}
+            className={`p-1.5 rounded-full transition-colors ${detailsOpen ? "bg-cyan-600 text-white" : "bg-slate-800 text-slate-400 hover:text-slate-200"}`}
           >
             <svg
               className="w-4 h-4"
@@ -756,19 +766,21 @@ export default function Home() {
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
+                d="M3.75 6h16.5M3.75 12h16.5M3.75 18h16.5"
               />
             </svg>
           </button>
-        </div>
-      </header>
 
-      {/* ═══ Global search bar ═══════════════════════════════════ */}
-      {globalSearchOpen && (
-        <div className="shrink-0 px-3 py-2 bg-slate-900/90 backdrop-blur border-b border-slate-800/40">
-          <div className="flex items-center gap-2 max-w-2xl mx-auto">
+          {/* Raw feed + captions. Hidden by default: they are debugging aids,
+              and they cost the analysed view ~320px of width. */}
+          <button
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? "Hide raw feed & captions" : "Show raw feed & captions"}
+            aria-pressed={sidebarOpen}
+            className={`hidden lg:block p-1.5 rounded-full transition-colors ${sidebarOpen ? "bg-cyan-600 text-white" : "bg-slate-800 text-slate-400 hover:text-slate-200"}`}
+          >
             <svg
-              className="w-4 h-4 text-slate-500 shrink-0"
+              className="w-4 h-4"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -777,39 +789,13 @@ export default function Home() {
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
+                d="M3.75 5.25h16.5v13.5H3.75zM15 5.25v13.5"
               />
             </svg>
-            <input
-              type="text"
-              value={globalSearch}
-              onChange={(e) => {
-                const v = e.target.value;
-                setGlobalSearch(v);
-                setCaptionSearch(v);
-                setLogSearch(v);
-                setReportSearch(v);
-              }}
-              placeholder="Search all captions, detections, and reports…"
-              autoFocus
-              className="flex-1 bg-transparent text-slate-200 text-sm placeholder-slate-600 focus:outline-none"
-            />
-            {globalSearch && (
-              <button
-                onClick={() => {
-                  setGlobalSearch("");
-                  setCaptionSearch("");
-                  setLogSearch("");
-                  setReportSearch("");
-                }}
-                className="text-slate-500 hover:text-slate-300 text-xs"
-              >
-                Clear
-              </button>
-            )}
-          </div>
+          </button>
         </div>
-      )}
+      </header>
+
 
       {/* ═══ Mobile tab bar ══════════════════════════════════════ */}
       <div className="sm:hidden flex border-b border-slate-800/40 bg-slate-900/60">
@@ -1471,7 +1457,9 @@ export default function Home() {
                   min-h-0 + overflow-hidden keep it inside the video row: without
                   them the thumbnail's fixed aspect ratio makes the column taller
                   than its parent and the captions spill over the panel below. */}
-              <div className="hidden lg:flex lg:w-72 xl:w-80 shrink-0 min-h-0 overflow-hidden flex-col bg-slate-900/60 border-l border-slate-800/40">
+              <div
+                className={`${sidebarOpen ? "hidden lg:flex" : "hidden"} lg:w-72 xl:w-80 shrink-0 min-h-0 overflow-hidden flex-col bg-slate-900/60 border-l border-slate-800/40`}
+              >
                 <div className="aspect-video max-h-[45%] bg-black flex items-center justify-center overflow-hidden shrink-0 rounded-2xl m-1">
                   {rawFrame ? (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -1651,8 +1639,8 @@ export default function Home() {
 
             {/* ── Bottom panel — independent scroll columns ──── */}
             <div
-              className="shrink-0 border-t border-slate-800/40 flex flex-col md:flex-row"
-              style={{ height: "40vh" }}
+              className="shrink-0 border-t border-slate-800/40 flex flex-col md:flex-row overflow-hidden transition-[height] duration-200"
+              style={{ height: detailsOpen ? "40vh" : "0px" }}
             >
               {/* Mobile: caption cards (hidden on lg, shown above in sidebar) */}
               <div className="lg:hidden px-3 py-2 border-b md:border-b-0 md:border-r border-slate-800/30 min-w-0 flex-1 overflow-y-auto">
