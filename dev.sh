@@ -9,6 +9,32 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# ── Interpreter ───────────────────────────────────────────────────────────
+# Pin the env rather than trusting whatever `python` resolves to. On this
+# machine bare `python` is anaconda base, where torch is broken against the
+# system libtorch:
+#   ImportError: Symbol not found: __ZN2at17toDLPackVersionedERKNS_6TensorE
+# The backend then dies at import, and every symptom shows up somewhere
+# else — no live stream, alerts that never save — with nothing on screen
+# pointing at the interpreter.
+PYTHON="${SENTINEL_PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+  for cand in "$ROOT/.venv/bin/python" \
+              /opt/anaconda3/envs/verec/bin/python \
+              /opt/homebrew/Caskroom/miniconda/base/envs/verec/bin/python; do
+    if [ -x "$cand" ]; then PYTHON="$cand"; break; fi
+  done
+fi
+PYTHON="${PYTHON:-python}"
+
+if ! "$PYTHON" -c "import torch, cv2, onnxruntime" 2>/dev/null; then
+  echo "✗ $PYTHON cannot import torch/cv2/onnxruntime."
+  echo "  Set SENTINEL_PYTHON to an interpreter that can, e.g.:"
+  echo "  SENTINEL_PYTHON=/opt/anaconda3/envs/verec/bin/python ./dev.sh"
+  exit 1
+fi
+echo "▶ Python: $PYTHON"
+
 # ── Weapon detector ───────────────────────────────────────────────────────
 # weapons_v1.onnx (Sohas, 2026-08-10) is retired, see training/weapons/README.md.
 # It never passed `training.weapons.evaluate`: at every threshold quiet enough
@@ -56,7 +82,7 @@ export SENTINEL_WEAPON_CLASSES='["gun","knife"]'
 # ── Backend ───────────────────────────────────────────────────────────────
 echo "▶ Starting backend (MPS GPU + camera)…"
 cd "$ROOT"
-python -m backend.server \
+"$PYTHON" -m backend.server \
   --model-path checkpoints/llava-fastvithd_0.5b_stage3 \
   --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
