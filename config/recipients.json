@@ -1,0 +1,25 @@
+{
+  "_comment": "Officers who receive alerts. 'areas' empty means every camera. 'min_severity' is the lowest level worth sending: low, medium, high, critical.",
+  "recipients": [
+    {
+      "name": "Control Room",
+      "areas": [],
+      "email": "control@example.org",
+      "whatsapp": "+256700000000",
+      "min_severity": "medium"
+    },
+    {
+      "name": "Kira Division Duty Officer",
+      "areas": ["kira"],
+      "email": "kira.duty@example.org",
+      "whatsapp": "+256700000001",
+      "min_severity": "high"
+    },
+    {
+      "name": "Kawempe Duty Officer",
+      "areas": ["kawempe"],
+      "whatsapp": "+256700000002",
+      "min_severity": "critical"
+    }
+  ]
+}

@@ -584,6 +584,47 @@ def acknowledge_alert(alert_id: str):
     return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
 
 
+@app.get("/api/cameras")
+def list_cameras():
+    """Registered cameras and where they are."""
+    from backend.dispatch import cameras
+    return cameras()
+
+
+@app.get("/api/alerts/{alert_id}/dispatch")
+def preview_dispatch(alert_id: str, camera_id: str = ""):
+    """What WOULD be sent, and to whom. Sends nothing."""
+    from backend.dispatch import dispatch
+    for a in _alerts:
+        if a["id"] == alert_id:
+            return dispatch(a, camera_id or a.get("source", ""))
+    return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+
+
+@app.post("/api/alerts/{alert_id}/dispatch")
+def send_dispatch(alert_id: str, body: dict | None = None):
+    """Send an alert to the officers on call for that camera.
+
+    This is the human-in-the-loop step. `force` is set by a person pressing
+    send in the UI, and without it nothing leaves the building unless
+    SENTINEL_DISPATCH_MODE is explicitly set to `auto`.
+    """
+    from backend.dispatch import dispatch
+    body = body or {}
+    for a in _alerts:
+        if a["id"] == alert_id:
+            res = dispatch(a, body.get("camera_id") or a.get("source", ""),
+                           confirmed_by=body.get("confirmed_by"),
+                           force=bool(body.get("force", True)))
+            if res.get("sent"):
+                a["dispatched_at"] = datetime.now(timezone.utc).isoformat()
+                a["dispatched_to"] = [r["name"] for r in res.get("recipients", [])]
+                with _export_lock:
+                    _flush_json(f"alerts_{_session_id}.json", _alerts)
+            return res
+    return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+
+
 @app.post("/api/alerts/clear")
 def clear_alerts():
     with _export_lock:

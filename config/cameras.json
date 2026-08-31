@@ -1,0 +1,26 @@
+{
+  "cam-naalya-01": {
+    "name": "Naalya Nabe Rd Junction",
+    "address": "Naalya-Nabe Road, Kira, Wakiso",
+    "area": "kira",
+    "lat": 0.3736,
+    "lng": 32.6289,
+    "police_post": "Kira Division Police Station"
+  },
+  "cam-gayaza-01": {
+    "name": "Total Gayaza Road",
+    "address": "Gayaza Road, Kawempe, Kampala",
+    "area": "kawempe",
+    "lat": 0.3663,
+    "lng": 32.5644,
+    "police_post": "Kawempe Police Station"
+  },
+  "cam-kajjansi-01": {
+    "name": "Kajjansi Trading Centre",
+    "address": "Entebbe Road, Kajjansi, Wakiso",
+    "area": "wakiso",
+    "lat": 0.2094,
+    "lng": 32.5436,
+    "police_post": "Kajjansi Police Post"
+  }
+}
