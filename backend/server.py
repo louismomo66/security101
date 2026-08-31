@@ -591,6 +591,24 @@ def list_cameras():
     return cameras()
 
 
+@app.get("/api/recipients")
+def list_recipients():
+    """Officers on call, and how they are reached."""
+    from backend.dispatch import recipients
+    return {"recipients": recipients(),
+            "mode": os.environ.get("SENTINEL_DISPATCH_MODE", "manual").lower(),
+            "email_ready": bool(os.environ.get("SMTP_HOST", "").strip()),
+            "whatsapp_ready": bool(os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+                                   and os.environ.get("TWILIO_WHATSAPP_FROM", "").strip())}
+
+
+@app.put("/api/recipients")
+def put_recipients(body: dict):
+    """Replace the recipient list. Writes config/recipients.json."""
+    from backend.dispatch import save_recipients
+    return save_recipients(body.get("recipients", []))
+
+
 @app.get("/api/alerts/{alert_id}/dispatch")
 def preview_dispatch(alert_id: str, camera_id: str = ""):
     """What WOULD be sent, and to whom. Sends nothing."""

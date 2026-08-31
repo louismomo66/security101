@@ -15,6 +15,14 @@ import {
   fetchVideos,
   uploadVideo,
   deleteVideo,
+  fetchCameras,
+  fetchRecipients,
+  saveRecipients,
+  previewDispatch,
+  sendDispatch,
+  type Camera,
+  type Recipient,
+  type DispatchResult,
   type ManagedSocket,
   type SourceKind,
   type VideoMeta,
@@ -152,13 +160,313 @@ const SEVERITY_STYLE: Record<
   },
 };
 
+/** The phone numbers and addresses alerts are sent to.
+ *
+ * Backed by config/recipients.json, which stays hand-editable — this is the
+ * same list, editable without a text editor.
+ */
+function RecipientsEditor() {
+  const [rows, setRows] = useState<Recipient[]>([]);
+  const [status, setStatus] = useState<{
+    mode: string;
+    email_ready: boolean;
+    whatsapp_ready: boolean;
+  } | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    fetchRecipients()
+      .then((r) => {
+        setRows(r.recipients);
+        setStatus(r);
+      })
+      .catch(() => {});
+  }, []);
+
+  const patch = (i: number, field: keyof Recipient, value: unknown) => {
+    setSaved(false);
+    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
+  };
+
+  const save = async () => {
+    const res = await saveRecipients(rows);
+    setRows(res.recipients);
+    setWarnings(res.warnings);
+    setSaved(true);
+  };
+
+  const field =
+    "w-full text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-slate-200 placeholder:text-slate-600";
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+        Alert recipients
+      </h4>
+
+      {status && (
+        <p className="text-[9px] text-slate-500">
+          Mode <span className="text-slate-300">{status.mode}</span> · WhatsApp{" "}
+          <span className={status.whatsapp_ready ? "text-emerald-400" : "text-amber-400"}>
+            {status.whatsapp_ready ? "ready" : "not configured"}
+          </span>{" "}
+          · Email{" "}
+          <span className={status.email_ready ? "text-emerald-400" : "text-amber-400"}>
+            {status.email_ready ? "ready" : "not configured"}
+          </span>
+        </p>
+      )}
+
+      {rows.map((r, i) => (
+        <div
+          key={i}
+          className="rounded-lg border border-slate-700/50 bg-slate-800/40 p-2 space-y-1.5"
+        >
+          <div className="flex gap-1.5">
+            <input
+              value={r.name}
+              onChange={(e) => patch(i, "name", e.target.value)}
+              placeholder="Officer or unit"
+              className={field}
+            />
+            <button
+              onClick={() => (setSaved(false), setRows(rows.filter((_, j) => j !== i)))}
+              className="text-slate-600 hover:text-red-400 text-sm px-1 shrink-0"
+              aria-label={`Remove ${r.name}`}
+            >
+              &times;
+            </button>
+          </div>
+          <input
+            value={r.whatsapp ?? ""}
+            onChange={(e) => patch(i, "whatsapp", e.target.value)}
+            placeholder="WhatsApp, with country code: +256700123456"
+            className={field}
+          />
+          <input
+            value={r.email ?? ""}
+            onChange={(e) => patch(i, "email", e.target.value)}
+            placeholder="Email address"
+            className={field}
+          />
+          <div className="flex gap-1.5">
+            <input
+              value={r.areas.join(", ")}
+              onChange={(e) =>
+                patch(
+                  i,
+                  "areas",
+                  e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                )
+              }
+              placeholder="Areas (blank = all)"
+              className={field}
+            />
+            <select
+              value={r.min_severity}
+              onChange={(e) => patch(i, "min_severity", e.target.value)}
+              className="text-[10px] bg-slate-800 border border-slate-700 rounded px-1 py-1 text-slate-200 shrink-0"
+            >
+              {(["low", "medium", "high", "critical"] as const).map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ))}
+
+      <div className="flex gap-1.5">
+        <button
+          onClick={() =>
+            setRows([
+              ...rows,
+              { name: "", areas: [], email: "", whatsapp: "", min_severity: "high" },
+            ])
+          }
+          className="flex-1 text-[10px] py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+        >
+          + Add recipient
+        </button>
+        <button
+          onClick={save}
+          className="flex-1 text-[10px] py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-medium transition-colors"
+        >
+          {saved ? "Saved" : "Save"}
+        </button>
+      </div>
+
+      {warnings.map((w, i) => (
+        <p key={i} className="text-[9px] text-amber-400">
+          {w}
+        </p>
+      ))}
+
+      <p className="text-[9px] text-slate-600 leading-relaxed">
+        A recipient hears about an alert only if it reaches their minimum
+        severity and happens at a camera in one of their areas.
+      </p>
+    </div>
+  );
+}
+
+/** Send one alert on to the officers covering that camera.
+ *
+ * Deliberately two steps. The operator picks the camera, reads the exact
+ * words that will arrive on someone's phone, and only then sends — because
+ * the detector saw a movement, and whether it was a crime is the operator's
+ * call, not the model's.
+ */
+function DispatchPanel({
+  alert,
+  cameras,
+  defaultCamera,
+}: {
+  alert: ThreatAlert;
+  cameras: Record<string, Camera>;
+  defaultCamera: string;
+}) {
+  const ids = Object.keys(cameras);
+  const [cameraId, setCameraId] = useState(defaultCamera || ids[0] || "");
+  const [officer, setOfficer] = useState("");
+  const [preview, setPreview] = useState<DispatchResult | null>(null);
+  const [result, setResult] = useState<DispatchResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!cameraId) return;
+    let live = true;
+    previewDispatch(alert.id, cameraId)
+      .then((p) => live && (setPreview(p), setError(null)))
+      .catch((e) => live && setError(String(e)));
+    return () => {
+      live = false;
+    };
+  }, [alert.id, cameraId]);
+
+  const send = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(await sendDispatch(alert.id, cameraId, officer.trim() || "operator"));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const people = preview?.recipients ?? [];
+
+  return (
+    <div className="rounded-lg border border-slate-700/50 bg-slate-900/60 p-2.5 space-y-2">
+      <div className="flex items-center gap-2">
+        <label className="text-[10px] text-slate-500 shrink-0">Camera</label>
+        <select
+          value={cameraId}
+          onChange={(e) => setCameraId(e.target.value)}
+          className="flex-1 min-w-0 text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
+        >
+          {ids.length === 0 && <option value="">no cameras registered</option>}
+          {ids.map((id) => (
+            <option key={id} value={id}>
+              {cameras[id].name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {preview && (
+        <p className="text-[10px] text-slate-400">
+          {preview.preview.camera.address}
+          {preview.preview.camera.police_post
+            ? ` · ${preview.preview.camera.police_post}`
+            : ""}
+        </p>
+      )}
+
+      {preview && (
+        <div>
+          <p className="text-[9px] uppercase tracking-wide text-slate-500 mb-1">
+            {people.length === 0
+              ? "Nobody on call for this area at this severity"
+              : `Goes to ${people.length} recipient${people.length > 1 ? "s" : ""}`}
+          </p>
+          <ul className="space-y-0.5">
+            {people.map((r) => (
+              <li key={r.name} className="text-[10px] text-slate-300 flex gap-2">
+                <span className="truncate">{r.name}</span>
+                <span className="text-slate-600 font-mono truncate">
+                  {[r.whatsapp, r.email].filter(Boolean).join("  ")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {preview && (
+        <pre className="text-[9px] leading-relaxed text-slate-400 bg-slate-950/60 rounded p-2 whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
+          {preview.preview.text}
+        </pre>
+      )}
+
+      {result ? (
+        <div className="space-y-1">
+          <p
+            className={`text-[10px] font-medium ${
+              result.sent ? "text-emerald-400" : "text-amber-400"
+            }`}
+          >
+            {result.sent
+              ? `Sent to ${result.delivered} of ${result.attempted}`
+              : result.reason || "Nothing was sent"}
+          </p>
+          {result.results?.map((x, i) => (
+            <p key={i} className="text-[9px] font-mono text-slate-500">
+              {x.sent ? "✓" : "✗"} {x.channel} {x.to}
+              {x.reason ? ` — ${x.reason}` : ""}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <div className="flex gap-1.5">
+          <input
+            value={officer}
+            onChange={(e) => setOfficer(e.target.value)}
+            placeholder="Your name"
+            className="flex-1 min-w-0 text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-slate-200 placeholder:text-slate-600"
+          />
+          <button
+            onClick={send}
+            disabled={busy || !cameraId || people.length === 0}
+            className="text-[10px] px-2.5 py-1 rounded bg-red-600/80 hover:bg-red-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium transition-colors shrink-0"
+          >
+            {busy ? "Sending…" : "Send now"}
+          </button>
+        </div>
+      )}
+
+      {error && <p className="text-[9px] text-red-400">{error}</p>}
+    </div>
+  );
+}
+
 function AlertCard({
   alert,
   onAck,
+  cameras,
+  defaultCamera,
 }: {
   alert: ThreatAlert;
   onAck: (id: string) => void;
+  cameras: Record<string, Camera>;
+  defaultCamera: string;
 }) {
+  const [reporting, setReporting] = useState(false);
   const [open, setOpen] = useState(false);
   const s = SEVERITY_STYLE[alert.severity] ?? SEVERITY_STYLE.info;
   const time = new Date(alert.timestamp).toLocaleTimeString();
@@ -221,13 +529,36 @@ function AlertCard({
             offence occurred.
           </p>
 
-          {!alert.acknowledged && (
+          {alert.dispatched_at && (
+            <p className="text-[9px] text-emerald-400/80">
+              Reported to {(alert.dispatched_to ?? []).join(", ")} at{" "}
+              {new Date(alert.dispatched_at).toLocaleTimeString()}
+            </p>
+          )}
+
+          <div className="flex gap-1.5">
+            {!alert.acknowledged && (
+              <button
+                onClick={() => onAck(alert.id)}
+                className="text-[10px] px-2 py-1 rounded-lg bg-slate-700/60 hover:bg-slate-700 text-slate-300 transition-colors"
+              >
+                Acknowledge
+              </button>
+            )}
             <button
-              onClick={() => onAck(alert.id)}
+              onClick={() => setReporting(!reporting)}
               className="text-[10px] px-2 py-1 rounded-lg bg-slate-700/60 hover:bg-slate-700 text-slate-300 transition-colors"
             >
-              Acknowledge
+              {reporting ? "Cancel" : "Report to police"}
             </button>
+          </div>
+
+          {reporting && (
+            <DispatchPanel
+              alert={alert}
+              cameras={cameras}
+              defaultCamera={defaultCamera}
+            />
           )}
         </div>
       )}
@@ -388,8 +719,18 @@ export default function Home() {
   const [tab, setTab] = useState<"feed" | "export">("feed");
   const [exportData, setExportData] = useState<object | null>(null);
 
+  /* Where the cameras are, and who gets told when one sees something. */
+  const [cameras, setCameras] = useState<Record<string, Camera>>({});
+  const [activeCamera, setActiveCamera] = useState("");
+
   /* ── Init ──────────────────────────────────────────────────────── */
   useEffect(() => {
+    fetchCameras()
+      .then((c) => {
+        setCameras(c);
+        setActiveCamera((cur) => cur || Object.keys(c)[0] || "");
+      })
+      .catch(() => {});
     fetchPresets()
       .then(setPresets)
       .catch(() => {});
@@ -1175,6 +1516,10 @@ export default function Home() {
               ⏹ Stop
             </button>
           </div>
+
+          <div className="border-t border-slate-700/50 pt-3">
+            <RecipientsEditor />
+          </div>
         </div>
       )}
 
@@ -1629,7 +1974,13 @@ export default function Home() {
                   ) : (
                     <div className="space-y-1.5">
                       {visibleAlerts.map((a) => (
-                        <AlertCard key={a.id} alert={a} onAck={handleAckAlert} />
+                        <AlertCard
+                          key={a.id}
+                          alert={a}
+                          onAck={handleAckAlert}
+                          cameras={cameras}
+                          defaultCamera={activeCamera}
+                        />
                       ))}
                     </div>
                   )}

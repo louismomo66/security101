@@ -72,6 +72,9 @@ export interface ThreatAlert {
   evidence?: Record<string, unknown>;
   snapshot?: string | null;
   acknowledged?: boolean;
+  /** Set once an operator has sent this alert on to officers. */
+  dispatched_at?: string;
+  dispatched_to?: string[];
 }
 
 export interface ThreatStats {
@@ -210,6 +213,105 @@ export async function fetchAlerts(
 
 export async function acknowledgeAlert(id: string): Promise<void> {
   await fetch(`${httpBase()}/api/alerts/${id}/ack`, { method: "POST" });
+}
+
+/* ── Dispatch: sending an alert to officers ──────────────────────────── */
+
+export interface Camera {
+  name: string;
+  address?: string;
+  area?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  police_post?: string | null;
+}
+
+export interface Recipient {
+  name: string;
+  areas: string[];
+  email?: string;
+  whatsapp?: string;
+  min_severity: Severity;
+}
+
+export interface DispatchResult {
+  mode: string;
+  sent: boolean;
+  reason?: string;
+  delivered?: number;
+  attempted?: number;
+  results?: {
+    channel: string;
+    to: string;
+    sent: boolean;
+    reason?: string;
+  }[];
+  recipients: Recipient[];
+  preview: {
+    subject: string;
+    text: string;
+    camera: Camera & { id: string };
+    snapshot_name?: string | null;
+  };
+}
+
+export async function fetchCameras(): Promise<Record<string, Camera>> {
+  const r = await fetch(`${httpBase()}/api/cameras`);
+  if (!r.ok) throw new Error(`cameras: HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function fetchRecipients(): Promise<{
+  recipients: Recipient[];
+  mode: string;
+  email_ready: boolean;
+  whatsapp_ready: boolean;
+}> {
+  const r = await fetch(`${httpBase()}/api/recipients`);
+  if (!r.ok) throw new Error(`recipients: HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function saveRecipients(
+  recipients: Recipient[],
+): Promise<{ recipients: Recipient[]; warnings: string[] }> {
+  const r = await fetch(`${httpBase()}/api/recipients`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recipients }),
+  });
+  if (!r.ok) throw new Error(`save recipients: HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Who would be told and what it would say. Sends nothing. */
+export async function previewDispatch(
+  id: string,
+  cameraId: string,
+): Promise<DispatchResult> {
+  const qs = new URLSearchParams({ camera_id: cameraId });
+  const r = await fetch(`${httpBase()}/api/alerts/${id}/dispatch?${qs}`);
+  if (!r.ok) throw new Error(`dispatch preview: HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Actually send. `confirmedBy` records who took responsibility. */
+export async function sendDispatch(
+  id: string,
+  cameraId: string,
+  confirmedBy: string,
+): Promise<DispatchResult> {
+  const r = await fetch(`${httpBase()}/api/alerts/${id}/dispatch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      camera_id: cameraId,
+      confirmed_by: confirmedBy,
+      force: true,
+    }),
+  });
+  if (!r.ok) throw new Error(`dispatch: HTTP ${r.status}`);
+  return r.json();
 }
 
 export async function clearAlerts(): Promise<void> {

@@ -86,6 +86,51 @@ def recipients() -> list[dict]:
     return data.get("recipients", []) if isinstance(data, dict) else data
 
 
+def save_recipients(items: list[dict]) -> dict:
+    """Overwrite the recipient registry from the UI.
+
+    Numbers are stored exactly as typed. Guessing a country code is worse
+    than refusing: "0700123456" could be Uganda or Kenya, and a silently
+    rewritten number fails as a delivery error nobody connects to the typo.
+    So a number that is not in +country-code form is stored and reported
+    back as a warning the operator can see and fix.
+    """
+    cleaned: list[dict] = []
+    warnings: list[str] = []
+    for r in items or []:
+        name = (r.get("name") or "").strip()
+        if not name:
+            continue
+        wa = (r.get("whatsapp") or "").strip()
+        email = (r.get("email") or "").strip()
+        if not wa and not email:
+            warnings.append(f"{name}: no WhatsApp number and no email — cannot be reached")
+        if wa and not wa.startswith("+"):
+            warnings.append(f"{name}: \"{wa}\" needs a country code, e.g. +256{wa.lstrip('0')}")
+        sev = (r.get("min_severity") or "high").lower()
+        if sev not in SEVERITY_ORDER:
+            warnings.append(f"{name}: unknown severity \"{sev}\", using high")
+            sev = "high"
+        cleaned.append({
+            "name": name,
+            "areas": [a.strip() for a in (r.get("areas") or []) if a.strip()],
+            "email": email,
+            "whatsapp": wa,
+            "min_severity": sev,
+        })
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    (CONFIG_DIR / "recipients.json").write_text(
+        json.dumps({
+            "_comment": "Officers who receive alerts. 'areas' empty means every "
+                        "camera. 'min_severity' is the lowest level worth "
+                        "sending: low, medium, high, critical.",
+            "recipients": cleaned,
+        }, indent=2) + "\n",
+        encoding="utf-8")
+    return {"recipients": cleaned, "warnings": warnings}
+
+
 def resolve_camera(camera_id: str) -> dict:
     """Location for a camera id, or a clearly-marked unknown."""
     cam = cameras().get(camera_id or "")
@@ -200,6 +245,11 @@ def send_whatsapp(to: str, msg: dict) -> dict:
     if not (sid and token and frm):
         return {"channel": "whatsapp", "to": to, "sent": False,
                 "reason": "Twilio not configured"}
+    if not to.replace("whatsapp:", "").startswith("+"):
+        # Caught here rather than at Twilio, whose error for this is a bare
+        # code 21211 that gives an operator nothing to act on.
+        return {"channel": "whatsapp", "to": to, "sent": False,
+                "reason": f"{to} needs a country code, e.g. +256..."}
     try:
         import requests
         data = {"From": frm,
