@@ -344,7 +344,11 @@ def load_weapon_model(path: str | None = None,
             img_size = 640
             try:
                 import onnxruntime as ort
-                probe = ort.InferenceSession(model_path)
+                # CPU on purpose: this session only reads tensor shapes and
+                # never runs inference, and compiling the graph for CoreML
+                # to throw it away costs seconds of startup.
+                probe = ort.InferenceSession(
+                    model_path, providers=["CPUExecutionProvider"])
                 out_shape = probe.get_outputs()[0].shape
                 n_out = out_shape[1] if isinstance(out_shape[1], int) else None
                 in_shape = probe.get_inputs()[0].shape  # [N, C, H, W]

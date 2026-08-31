@@ -1,5 +1,7 @@
 """YOLO11n object detection via ONNX Runtime (ultralytics export format)."""
 
+import os
+
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -7,11 +9,47 @@ import onnxruntime as ort
 from .coco_classes import COCO_CLASSES, COCO_COLORS
 
 
-class YOLODetector:
-    """YOLO11n via ONNX Runtime (CPU).  Ultralytics export format."""
+def _make_session(model_path, providers=None):
+    """Build an inference session on the Neural Engine where one is available.
 
-    def __init__(self, model_path, conf=0.5, iou=0.45, img_size=None, nc=None):
-        self.session = ort.InferenceSession(model_path)
+    The weapon detector runs at 960px and dominates frame time on CPU —
+    measured 284ms against 58ms on CoreML, a 4.9x difference, which is the
+    gap between a stream that keeps up and one that does not.
+
+    CoreML falls back to CPU per-operator for anything it cannot take, so a
+    partially-supported graph still runs; if the provider fails to
+    initialise outright, so does the whole session, hence the retry on CPU
+    rather than letting a model that used to load simply stop loading.
+
+    SENTINEL_ORT_PROVIDER=cpu forces the old path, for comparing numbers or
+    working around a CoreML miscompile.
+    """
+    want = providers
+    if want is None:
+        choice = os.environ.get("SENTINEL_ORT_PROVIDER", "auto").lower()
+        avail = ort.get_available_providers()
+        if choice == "cpu" or "CoreMLExecutionProvider" not in avail:
+            want = ["CPUExecutionProvider"]
+        else:
+            want = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    try:
+        return ort.InferenceSession(model_path, providers=want)
+    except Exception as exc:
+        if want == ["CPUExecutionProvider"]:
+            raise
+        print(f"[yolo] {want[0]} failed ({type(exc).__name__}: {exc}); "
+              f"falling back to CPU", flush=True)
+        return ort.InferenceSession(model_path,
+                                    providers=["CPUExecutionProvider"])
+
+
+class YOLODetector:
+    """YOLO11n via ONNX Runtime (CoreML where available).  Ultralytics export."""
+
+    def __init__(self, model_path, conf=0.5, iou=0.45, img_size=None, nc=None,
+                 providers=None):
+        self.session = _make_session(model_path, providers)
+        self.providers = self.session.get_providers()
         self.conf = conf
         self.iou = iou
 
