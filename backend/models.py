@@ -313,18 +313,59 @@ def resolve_stream_url(url: str) -> str:
     if re.match(r"https?://(www\.)?(youtube\.com|youtu\.be)/", url):
         try:
             import yt_dlp
-            ydl_opts = {
-                "format": "best[ext=mp4][height<=720]/best[height<=720]/best",
-                "quiet": True, "no_warnings": True,
-            }
+            # No `format` filter. A selector like "best[ext=mp4][height<=720]"
+            # raises "Requested format is not available" on live streams,
+            # because YouTube serves those as HLS — every one of Shibuya's
+            # eight formats is m3u8 and none is a progressive mp4. Enumerate
+            # instead and choose, so a live stream never fails at selection.
+            ydl_opts = {"quiet": True, "no_warnings": True}
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                resolved = info.get("url", "")
-                if resolved:
-                    return resolved
-        except Exception:
-            pass
+
+                # OpenCV needs ONE url, so skip video-only/audio-only formats
+                # that would require muxing. HLS carries both.
+                usable = [
+                    f for f in (info.get("formats") or [])
+                    if f.get("url")
+                    and f.get("vcodec") not in (None, "none")
+                    and (f.get("height") or 0) <= 720
+                ]
+                if usable:
+                    best = max(usable, key=lambda f: (f.get("height") or 0,
+                                                      f.get("tbr") or 0))
+                    return best["url"]
+
+                for key in ("url", "manifest_url"):
+                    if info.get(key):
+                        return info[key]
+                _stream_error(url, "yt-dlp found no playable video format")
+        except ImportError:
+            # The one failure that looks nothing like its cause: without
+            # yt-dlp the raw watch-page URL is handed to OpenCV, which cannot
+            # open HTML and reports "Failed to open stream" — a missing
+            # dependency wearing a network error's clothes.
+            _stream_error(url, "yt-dlp is not installed "
+                               "(python -m pip install yt-dlp)")
+        except Exception as exc:
+            # Dead or geo-blocked links are routine; the reason matters and
+            # was previously discarded, leaving the same generic stream error
+            # for an expired link, a private video and a bad network.
+            _stream_error(url, f"{type(exc).__name__}: {exc}")
     return url
+
+
+_LAST_STREAM_ERROR: dict[str, str] = {}
+
+
+def _stream_error(url: str, reason: str) -> None:
+    _LAST_STREAM_ERROR["reason"] = reason
+    _LAST_STREAM_ERROR["url"] = url
+    print(f"[stream] could not resolve {url}: {reason}", flush=True)
+
+
+def last_stream_error() -> str:
+    """Why the most recent stream resolution failed, for the API to report."""
+    return _LAST_STREAM_ERROR.get("reason", "")
 
 
 IP_CAMERA_PRESETS = {

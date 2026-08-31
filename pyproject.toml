@@ -21,6 +21,11 @@ dependencies = [
     "einops==0.6.1", "einops-exts==0.0.4", "timm==1.0.15",
     "coremltools==8.2",
     "opencv-python", "onnxruntime", "python-dotenv", "openai", "Pillow",
+    # Required for the YouTube stream source. The Dockerfile installs it but
+    # it was never declared here, so a local env had it missing — and its
+    # absence surfaced as "Failed to open stream", because the raw watch-page
+    # URL was passed to OpenCV, which cannot open HTML.
+    "yt-dlp",
 ]
 
 [project.optional-dependencies]

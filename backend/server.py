@@ -42,7 +42,7 @@ from backend.models import (
     init_yolo_pose, init_action,
     get_camera_frame, run_detection,
     run_pose, run_action,
-    resolve_stream_url, IP_CAMERA_PRESETS, COCO_CLASSES,
+    resolve_stream_url, last_stream_error, IP_CAMERA_PRESETS, COCO_CLASSES,
 )
 import backend.models as _models
 
@@ -880,7 +880,14 @@ async def ws_feed(
             cap = cv2.VideoCapture(resolved, cv2.CAP_FFMPEG)
             cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)
             if not cap.isOpened():
-                await websocket.send_json({"error": "Failed to open stream"})
+                # Carry the resolver's reason through. "Failed to open
+                # stream" is the same message for a dead link, a private
+                # video, a geo-block and a missing yt-dlp, and only one of
+                # those is fixed by trying again.
+                why = last_stream_error()
+                await websocket.send_json({
+                    "error": f"Failed to open stream — {why}" if why
+                             else "Failed to open stream"})
                 await websocket.close()
                 return
 
