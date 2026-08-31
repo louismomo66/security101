@@ -10,10 +10,18 @@ from .coco_classes import COCO_CLASSES, COCO_COLORS
 class YOLODetector:
     """YOLO11n via ONNX Runtime (CPU).  Ultralytics export format."""
 
-    def __init__(self, model_path, conf=0.5, iou=0.45, img_size=640, nc=None):
+    def __init__(self, model_path, conf=0.5, iou=0.45, img_size=None, nc=None):
         self.session = ort.InferenceSession(model_path)
         self.conf = conf
         self.iou = iou
+
+        # Read the input size off the model rather than assuming 640. An
+        # export at any other imgsz fails outright with "Got invalid
+        # dimensions for input: images", which is a confusing way to learn
+        # that a perfectly good checkpoint was trained at 960.
+        shape = self.session.get_inputs()[0].shape
+        if img_size is None:
+            img_size = shape[2] if isinstance(shape[2], int) and shape[2] > 0 else 640
         self.img_size = img_size
         # Plain detection exports carry only box+class columns, so every
         # column past the first 4 is a class score. Segmentation exports
@@ -23,6 +31,20 @@ class YOLODetector:
         # phantom extra classes. Pass nc explicitly for segmentation-format
         # models; leave it None for plain detection models (unchanged
         # behaviour, e.g. the COCO 80-class detector used elsewhere).
+        #
+        # Ultralytics stamps the class names into the ONNX metadata, so when
+        # nc is not given it can be read rather than guessed — which stops a
+        # segmentation export from silently reporting 34 classes (2 real ones
+        # plus 32 mask coefficients) to a caller that never thought to pass it.
+        if nc is None:
+            meta = (self.session.get_modelmeta().custom_metadata_map or {})
+            raw = meta.get("names")
+            if raw:
+                try:
+                    import ast
+                    nc = len(ast.literal_eval(raw))
+                except (ValueError, SyntaxError):
+                    pass
         self.nc = nc
 
     def _preprocess(self, img_rgb):
