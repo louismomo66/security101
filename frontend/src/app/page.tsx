@@ -174,6 +174,7 @@ function RecipientsEditor() {
   } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchRecipients()
@@ -190,10 +191,21 @@ function RecipientsEditor() {
   };
 
   const save = async () => {
-    const res = await saveRecipients(rows);
-    setRows(res.recipients);
-    setWarnings(res.warnings);
-    setSaved(true);
+    setError(null);
+    try {
+      const res = await saveRecipients(rows);
+      setRows(res.recipients);
+      setWarnings(res.warnings);
+      setSaved(true);
+    } catch (e) {
+      // A save that fails silently is worse than one that fails loudly: the
+      // operator walks away believing an officer will be called.
+      setSaved(false);
+      setError(
+        `Not saved — ${e instanceof Error ? e.message : String(e)}. ` +
+          `Is the backend running?`,
+      );
+    }
   };
 
   const field =
@@ -297,6 +309,8 @@ function RecipientsEditor() {
           {saved ? "Saved" : "Save"}
         </button>
       </div>
+
+      {error && <p className="text-[9px] text-red-400">{error}</p>}
 
       {warnings.map((w, i) => (
         <p key={i} className="text-[9px] text-amber-400">

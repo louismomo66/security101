@@ -318,27 +318,51 @@ def resolve_stream_url(url: str) -> str:
             # because YouTube serves those as HLS — every one of Shibuya's
             # eight formats is m3u8 and none is a progressive mp4. Enumerate
             # instead and choose, so a live stream never fails at selection.
-            ydl_opts = {"quiet": True, "no_warnings": True}
+            ydl_opts = {
+                "quiet": True, "no_warnings": True,
+                # Pin the player client. yt-dlp's current default (ANDROID_VR)
+                # returns URLs that answer 403 Forbidden to any request that
+                # is not its own player, so resolution "succeeds" and OpenCV
+                # then fails to open a link that looks perfectly valid. The
+                # android client serves a plain progressive mp4 that ffmpeg
+                # fetches with no special headers — which is what OpenCV needs.
+                "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
-                # OpenCV needs ONE url, so skip video-only/audio-only formats
-                # that would require muxing. HLS carries both.
                 usable = [
                     f for f in (info.get("formats") or [])
                     if f.get("url")
                     and f.get("vcodec") not in (None, "none")
                     and (f.get("height") or 0) <= 720
                 ]
-                if usable:
-                    best = max(usable, key=lambda f: (f.get("height") or 0,
-                                                      f.get("tbr") or 0))
-                    return best["url"]
+                # Order by what OpenCV can actually open, not by pixels.
+                # HLS first: a live stream has nothing else, and it carries
+                # audio and video in one url. Then progressive (audio+video
+                # muxed), because YouTube serves those unrestricted, where
+                # the higher-resolution video-only formats are client-bound
+                # and 403. A working 360p beats a 720p that never opens.
+                def _rank(f: dict) -> tuple:
+                    return (
+                        2 if "m3u8" in (f.get("protocol") or "") else 0,
+                        1 if f.get("acodec") not in (None, "none") else 0,
+                        f.get("height") or 0,
+                        f.get("tbr") or 0,
+                    )
+
+                for f in sorted(usable, key=_rank, reverse=True):
+                    if _url_is_fetchable(f["url"]):
+                        return f["url"]
 
                 for key in ("url", "manifest_url"):
-                    if info.get(key):
+                    if info.get(key) and _url_is_fetchable(info[key]):
                         return info[key]
-                _stream_error(url, "yt-dlp found no playable video format")
+                _stream_error(
+                    url,
+                    f"yt-dlp found {len(usable)} video format(s) but none could "
+                    f"be fetched — YouTube may have changed its player, or the "
+                    f"video is private, geo-blocked or age-restricted")
         except ImportError:
             # The one failure that looks nothing like its cause: without
             # yt-dlp the raw watch-page URL is handed to OpenCV, which cannot
@@ -352,6 +376,28 @@ def resolve_stream_url(url: str) -> str:
             # for an expired link, a private video and a bad network.
             _stream_error(url, f"{type(exc).__name__}: {exc}")
     return url
+
+
+def _url_is_fetchable(url: str, timeout: float = 6.0) -> bool:
+    """Does this url actually serve bytes?
+
+    Worth the ~200ms. A YouTube media url that 403s is indistinguishable
+    from a good one by inspection, and handing it to OpenCV turns a
+    diagnosable "403 Forbidden" into a bare "Failed to open stream". Asking
+    for the first byte here means a format that cannot be played is skipped
+    while alternatives remain, instead of failing the whole request.
+    """
+    import urllib.error
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status < 400
+    except urllib.error.HTTPError as exc:
+        # 416 means the server rejected the range but the url is live.
+        return exc.code == 416
+    except Exception:
+        return False
 
 
 _LAST_STREAM_ERROR: dict[str, str] = {}
