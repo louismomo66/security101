@@ -10,28 +10,33 @@ from .coco_classes import COCO_CLASSES, COCO_COLORS
 
 
 def _make_session(model_path, providers=None):
-    """Build an inference session on the Neural Engine where one is available.
+    """Build an inference session, on CPU unless CoreML is asked for.
 
-    The weapon detector runs at 960px and dominates frame time on CPU —
-    measured 284ms against 58ms on CoreML, a 4.9x difference, which is the
-    gap between a stream that keeps up and one that does not.
+    The weapon detector runs at 960px and dominates frame time. Measured on
+    the Uganda armed-robbers clip, 25 frames, each provider in its own
+    process: CPU 2167ms/frame against CoreML 258ms, an 8.4x difference.
+    Detections matched across 40 sampled frames — identical class sets,
+    pixel-identical boxes, largest confidence delta 0.005.
 
     CoreML falls back to CPU per-operator for anything it cannot take, so a
     partially-supported graph still runs; if the provider fails to
     initialise outright, so does the whole session, hence the retry on CPU
     rather than letting a model that used to load simply stop loading.
 
-    SENTINEL_ORT_PROVIDER=cpu forces the old path, for comparing numbers or
-    working around a CoreML miscompile.
+    Off by default for now, at the user's request. CPU is slow but it is the
+    path every measurement in training/weapons/README.md was taken on, and
+    the detector's thresholds were tuned against those numbers.
+
+    SENTINEL_ORT_PROVIDER=coreml turns it back on.
     """
     want = providers
     if want is None:
-        choice = os.environ.get("SENTINEL_ORT_PROVIDER", "auto").lower()
+        choice = os.environ.get("SENTINEL_ORT_PROVIDER", "cpu").lower()
         avail = ort.get_available_providers()
-        if choice == "cpu" or "CoreMLExecutionProvider" not in avail:
-            want = ["CPUExecutionProvider"]
-        else:
+        if choice == "coreml" and "CoreMLExecutionProvider" in avail:
             want = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        else:
+            want = ["CPUExecutionProvider"]
     try:
         return ort.InferenceSession(model_path, providers=want)
     except Exception as exc:
@@ -44,7 +49,7 @@ def _make_session(model_path, providers=None):
 
 
 class YOLODetector:
-    """YOLO11n via ONNX Runtime (CoreML where available).  Ultralytics export."""
+    """YOLO11n via ONNX Runtime (CPU).  Ultralytics export format."""
 
     def __init__(self, model_path, conf=0.5, iou=0.45, img_size=None, nc=None,
                  providers=None):

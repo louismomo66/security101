@@ -99,9 +99,26 @@ _ALLOWED_ORIGINS = os.environ.get(
     "http://localhost:3000,http://127.0.0.1:3000,http://frontend:3000",
 ).split(",")
 
+# The header shows the machine's LAN address so the UI can be opened from
+# another device on the same network — but that origin was not allowed, so
+# on 192.168.x.x every write failed while reads appeared to work. Saving a
+# recipient is a PUT carrying JSON, which needs a preflight; the ack POST
+# sends no content-type and needs none. That asymmetry is why "the app
+# works, but nothing I change sticks".
+_PRIVATE_ORIGIN_RE = (
+    r"https?://("
+    r"localhost|127\.0\.0\.1|\[::1\]|"
+    r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+    r"192\.168\.\d{1,3}\.\d{1,3}|"
+    r"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|"
+    r"[A-Za-z0-9-]+\.local"
+    r")(:\d+)?"
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
+    allow_origin_regex=_PRIVATE_ORIGIN_RE,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

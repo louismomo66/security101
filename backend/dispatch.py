@@ -147,9 +147,14 @@ def for_alert(alert: dict, camera_id: str) -> list[dict]:
     sev = _rank(alert.get("severity", "low"))
     out = []
     for r in recipients():
-        areas = r.get("areas") or []
+        areas = [str(a).strip().lower() for a in (r.get("areas") or []) if str(a).strip()]
         # An empty area list means "everywhere" — useful for a control room.
-        if areas and cam.get("area") not in areas:
+        # So does the word people actually type when they mean it. The field
+        # says "blank = all", so "all" is the obvious thing to write, and it
+        # used to match no camera at all: the recipient saved fine and then
+        # silently received nothing, which is the worst way for this to fail.
+        everywhere = not areas or bool({"all", "any", "*"} & set(areas))
+        if not everywhere and (cam.get("area") or "").lower() not in areas:
             continue
         if sev < _rank(r.get("min_severity", "high")):
             continue
