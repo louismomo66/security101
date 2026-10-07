@@ -9,36 +9,74 @@ import onnxruntime as ort
 from .coco_classes import COCO_CLASSES, COCO_COLORS
 
 
+def _cudnn_lib_dir():
+    """Where pip's nvidia-cudnn wheel put its shared libraries, if anywhere.
+
+    ONNX Runtime's CUDA provider dlopen()s libcudnn at session creation and
+    does not search Python's site-packages, so a pip-installed cuDNN is
+    invisible to it unless the directory is on the loader path. Adding it
+    here means CUDA works without the caller having to remember
+    LD_LIBRARY_PATH.
+    """
+    try:
+        import nvidia.cudnn  # noqa: F401  (pip wheel, not always present)
+    except ImportError:
+        return None
+    import nvidia.cudnn
+    d = os.path.join(os.path.dirname(nvidia.cudnn.__file__), "lib")
+    return d if os.path.isdir(d) else None
+
+
 def _make_session(model_path, providers=None):
-    """Build an inference session, on CPU unless CoreML is asked for.
+    """Build an inference session: CUDA, CoreML or CPU.
 
     The weapon detector runs at 960px and dominates frame time. Measured on
-    the Uganda armed-robbers clip, 25 frames, each provider in its own
-    process: CPU 2167ms/frame against CoreML 258ms, an 8.4x difference.
-    Detections matched across 40 sampled frames — identical class sets,
-    pixel-identical boxes, largest confidence delta 0.005.
+    yolov8s-seg at 960 — the same architecture and input size as
+    weapons_v2 — with each provider in its own process:
 
-    CoreML falls back to CPU per-operator for anything it cannot take, so a
-    partially-supported graph still runs; if the provider fails to
-    initialise outright, so does the whole session, hence the retry on CPU
-    rather than letting a model that used to load simply stop loading.
+        Tesla V100, CUDA           30.4 ms     <- SENTINEL_ORT_PROVIDER=cuda
+        Apple Neural Engine        64   ms     <- SENTINEL_ORT_PROVIDER=coreml
+        Xeon, 80 cores            290   ms
+        Apple M-series CPU        304   ms
 
-    Off by default for now, at the user's request. CPU is slow but it is the
-    path every measurement in training/weapons/README.md was taken on, and
-    the detector's thresholds were tuned against those numbers.
+    Two traps are worth knowing, because both fail *quietly*:
 
-    SENTINEL_ORT_PROVIDER=coreml turns it back on.
+    1. A CUDA provider that cannot load its libraries does not raise. ONNX
+       Runtime logs a line and silently runs the graph on CPU, so the only
+       symptom is that the GPU made no difference. The measurement above was
+       nearly missed for exactly this reason: CUDA read 275ms and CPU 272ms,
+       because both were the CPU.
+
+    2. Version coupling is strict. onnxruntime-gpu 1.19 wants cuDNN 9; 1.18
+       wants cuDNN 8. Installing the wrong pair produces trap 1.
+
+    So after creating a CUDA session we verify the provider actually took,
+    and say so loudly if it did not.
+
+    Default stays CPU: every threshold in training/weapons/README.md was
+    tuned there. SENTINEL_ORT_PROVIDER picks cuda | coreml | cpu.
     """
     want = providers
+    verify_cuda = False
     if want is None:
         choice = os.environ.get("SENTINEL_ORT_PROVIDER", "cpu").lower()
         avail = ort.get_available_providers()
-        if choice == "coreml" and "CoreMLExecutionProvider" in avail:
+        if choice == "cuda" and "CUDAExecutionProvider" in avail:
+            want = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            verify_cuda = True
+            # Put pip's cuDNN on the loader path before the session is built;
+            # ORT resolves the library at construction, so doing it after is
+            # too late.
+            d = _cudnn_lib_dir()
+            if d and d not in os.environ.get("LD_LIBRARY_PATH", ""):
+                os.environ["LD_LIBRARY_PATH"] = (
+                    d + ":" + os.environ.get("LD_LIBRARY_PATH", "")).rstrip(":")
+        elif choice == "coreml" and "CoreMLExecutionProvider" in avail:
             want = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
         else:
             want = ["CPUExecutionProvider"]
     try:
-        return ort.InferenceSession(model_path, providers=want)
+        sess = ort.InferenceSession(model_path, providers=want)
     except Exception as exc:
         if want == ["CPUExecutionProvider"]:
             raise
@@ -47,9 +85,18 @@ def _make_session(model_path, providers=None):
         return ort.InferenceSession(model_path,
                                     providers=["CPUExecutionProvider"])
 
+    if verify_cuda and "CUDAExecutionProvider" not in sess.get_providers():
+        # Asked for the GPU, got the CPU. Worth shouting about: the run will
+        # otherwise look fine and be ten times slower than it should be.
+        print("[yolo] CUDA was requested but the session is running on "
+              f"{sess.get_providers()}. The provider library did not load — "
+              "usually an onnxruntime-gpu / cuDNN version mismatch "
+              "(1.19 needs cuDNN 9, 1.18 needs cuDNN 8).", flush=True)
+    return sess
+
 
 class YOLODetector:
-    """YOLO11n via ONNX Runtime (CPU).  Ultralytics export format."""
+    """YOLO11n via ONNX Runtime (CPU, CUDA or CoreML).  Ultralytics export."""
 
     def __init__(self, model_path, conf=0.5, iou=0.45, img_size=None, nc=None,
                  providers=None):
