@@ -702,6 +702,54 @@ export default function Home() {
      height from the video, and the video resizing mid-incident is worse than
      having to click to read the list. Expansion is user-driven only. */
   const [alertsExpanded, setAlertsExpanded] = useState(false);
+  // How tall the alert list is, as a percentage of the viewport. Drag-resizable
+  // and remembered, because the right size depends on the work: triaging a
+  // backlog wants a long list, watching a live feed wants the video. A fixed
+  // 28vh served neither well.
+  const ALERTS_MIN_VH = 12;
+  const ALERTS_MAX_VH = 75;
+  const [alertsVh, setAlertsVh] = useState(28);
+  const [alertsDragging, setAlertsDragging] = useState(false);
+
+  useEffect(() => {
+    try {
+      const v = parseFloat(localStorage.getItem("sentinel.alertsVh") || "");
+      if (Number.isFinite(v)) {
+        setAlertsVh(Math.min(ALERTS_MAX_VH, Math.max(ALERTS_MIN_VH, v)));
+      }
+    } catch {
+      /* private window, blocked storage — the default is fine */
+    }
+  }, []);
+
+  // Height comes from the pointer's distance to the bottom of the window
+  // rather than an accumulated delta: absolute means the panel edge stays
+  // under the cursor even if a move event is dropped.
+  const onAlertsResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    setAlertsDragging(true);
+    if (!alertsExpanded) setAlertsExpanded(true);
+
+    const move = (ev: PointerEvent) => {
+      const vh = ((window.innerHeight - ev.clientY) / window.innerHeight) * 100;
+      setAlertsVh(Math.min(ALERTS_MAX_VH, Math.max(ALERTS_MIN_VH, vh)));
+    };
+    const up = () => {
+      setAlertsDragging(false);
+      el.releasePointerCapture?.(e.pointerId);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      setAlertsVh((v) => {
+        try { localStorage.setItem("sentinel.alertsVh", String(v)); } catch { /* ignore */ }
+        return v;
+      });
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  }, [alertsExpanded]);
+
   // The analysed view is the product; the raw feed and captions are debugging
   // aids. Off by default so the video gets the full width — they cost ~320px,
   // which on a laptop is a third of the frame.
@@ -1893,14 +1941,44 @@ export default function Home() {
                 Height is fixed per state — a slim ticker when collapsed, a
                 fixed 28vh when expanded — so incoming alerts scroll *within*
                 the strip instead of growing it and squeezing the video. */}
+            {/* No height transition. Animating between 2.25rem and a vh value
+                leaves the height stuck at the collapsed 36px in Chrome — the
+                panel reports the right inline style and renders the wrong size,
+                so it simply looks like expanding is broken. Measured: with the
+                transition 36px, without it 476px for the same 62vh. Snapping is
+                also what you want mid-drag. */}
             <div
-              className={`shrink-0 border-t flex flex-col overflow-hidden transition-[height] duration-200 ${
+              className={`shrink-0 border-t flex flex-col overflow-hidden ${
                 unackedCritical > 0
                   ? "border-red-500/40 bg-red-950/10"
                   : "border-slate-800/40"
               }`}
-              style={{ height: alertsExpanded ? "28vh" : "2.25rem" }}
+              style={{ height: alertsExpanded ? `${alertsVh}vh` : "2.25rem" }}
             >
+              {/* Drag to resize. Sits above the header so the whole top edge of
+                  the panel is the grab target, which is where a pointer goes
+                  looking for one. */}
+              <div
+                onPointerDown={onAlertsResize}
+                onDoubleClick={() => {
+                  setAlertsVh(28);
+                  try { localStorage.setItem("sentinel.alertsVh", "28"); } catch { /* ignore */ }
+                }}
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize incident alerts panel"
+                title="Drag to resize · double-click to reset"
+                className={`group h-1.5 -mb-1 shrink-0 cursor-ns-resize flex items-center justify-center ${
+                  alertsDragging ? "bg-cyan-500/40" : "hover:bg-cyan-500/20"
+                } transition-colors`}
+              >
+                <span
+                  className={`h-0.5 w-10 rounded-full transition-colors ${
+                    alertsDragging ? "bg-cyan-400" : "bg-slate-700 group-hover:bg-cyan-500/60"
+                  }`}
+                />
+              </div>
+
               {/* Header — always visible, always the same height */}
               <div className="flex items-center justify-between gap-2 px-3 h-9 shrink-0">
                 <button
